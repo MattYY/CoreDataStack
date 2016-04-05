@@ -37,19 +37,12 @@ public struct CoreDataStack {
     //MARK: private
     private let bundle: NSBundle
     private let modelName: String
-    private let containerName: String
+    private let containerURL: NSURL
     private let inMemoryStore: Bool
 
     private var persistentStoreCoordinator: NSPersistentStoreCoordinator?
     private var managedObjectModel: NSManagedObjectModel?
     private var writingContext: NSManagedObjectContext?
-    
-    private var directoryPath: NSURL {
-        let documentsPath = NSSearchPathForDirectoriesInDomains(.DocumentDirectory, .UserDomainMask, true)[0]
-        let fullPath = documentsPath.stringByAppendingString("/\(containerName)")
-        let containerPath = NSURL(fileURLWithPath: fullPath, isDirectory: true)
-        return containerPath
-    }
     
     
     //MARK: public
@@ -65,28 +58,23 @@ public struct CoreDataStack {
 
 
 //MARK: - LifeCycle -
-
 ///<>< Lifecycle ><>
 extension CoreDataStack {
     //MARK: Public
     
     /// Create a stack instance.
-    /// - `modelName` (required), must correspond with the name of the backing NSManagedObjectModel
-    /// - `containerName` is an optional directory name that can be used to sandbox different instances
-    ///    of the store. Containers are created as subdirectories within the `DocumentDirectory`.
-    /// - `inMemoryStore` if true, will create the persistant store using the `NSInMemoryStoreType`
+    /// - `bundle` (required): NSBundle in which your target NSManagedObjectModel can be found.
+    /// - `modelName` (required): must correspond with the name of the backing NSManagedObjectModel
+    /// - `containerURL` (required): is a URL that points to the folder in which the backing sqlite files will be stored.
+    /// - `inMemoryStore` :defaults to false. if true, will create the persistant store using the `NSInMemoryStoreType`
+    /// - `logDebugOutput`:defaults to false. if true, will log helpful debugging output.
     ///
     /// The underlying persistant store is set hardcoded to use an sqlite database and as basic migration options
     /// (`NSMigratePersistentStoresAutomaticallyOption` and `NSInferMappingModelAutomaticallyOption`) set to true.
-    public init(bundle: NSBundle,
-                modelName: String,
-                containerName: String = "",
-                inMemoryStore: Bool = false,
-                logDebugOutput: Bool = false) {
-        
+    public init(bundle: NSBundle, modelName: String, containerURL: NSURL, inMemoryStore: Bool = false, logDebugOutput: Bool = false) {
         self.bundle = bundle
         self.modelName = modelName
-        self.containerName = containerName
+        self.containerURL = containerURL
         self.inMemoryStore = inMemoryStore
         self.logDebugOutput = logDebugOutput
 
@@ -104,6 +92,8 @@ extension CoreDataStack {
     ///If you do not wish the stack to be rejuvenated in this manner pass false.  Effectively, this will render
     ///the stack instance useless but is valuable if you are planning on discontinuing the stack altogether
     ///and do not wish to incur the extra overhead of setting it up again.
+    ///
+    ///The optional completion block param is called the main queue.
     public mutating func deleteStore(andRejuvenate rejuvenate: Bool = true, completion: ErrorCompletionBlock = nil) {
         //1.
         tearDown()
@@ -118,12 +108,7 @@ extension CoreDataStack {
     
     ///Returns false if the stack was not setup, true if the stack was setup successfully.
     private mutating func setup() -> Bool {
-
-        //1.
-        createContainerIfNecessary()
-        
-        //2.
-        createStore()
+        setupStore()
         
         guard let _ = persistentStoreCoordinator,
                   _ = writingContext,
@@ -155,9 +140,8 @@ extension CoreDataStack {
         }
     }
     
-    
     //MARK: Private
-    private mutating func createStore() {
+    private mutating func setupStore() {
         //1.
         managedObjectModel = createManagedObjectModel()
         
@@ -169,30 +153,6 @@ extension CoreDataStack {
         
         //4.
         mainContext = createMainContext()
-    }
-    
-    private func createContainerIfNecessary() {
-        guard !inMemoryStore else {
-            return
-        }
-        
-        var error:NSError?
-        if !directoryPath.checkResourceIsReachableAndReturnError(&error) {
-            do {
-                try NSFileManager.defaultManager().createDirectoryAtURL(
-                    directoryPath,
-                    withIntermediateDirectories: true,
-                    attributes: nil)
-                
-                log.debug("Directory created at path: \(directoryPath)")
-            }
-            catch let error as NSError {
-                log.error("Unable to create container directory. Error: \(error.localizedDescription)")
-            }
-        }
-        else {
-            log.debug("Directory already exists at path: \(directoryPath)")
-        }
     }
     
     private func removePersistentStore() -> Bool {
@@ -213,7 +173,6 @@ extension CoreDataStack {
     }
 
     private func removeDBFiles(completion: ErrorCompletionBlock = nil) {
-        
         func completeOnMain(error: NSError? = nil) {
             dispatch_async(dispatch_get_main_queue()) {
                 completion?(error: error)
@@ -226,7 +185,7 @@ extension CoreDataStack {
             
             do {
                 let urls = try fileManager.contentsOfDirectoryAtURL(
-                    self.directoryPath, includingPropertiesForKeys: [], options: .SkipsSubdirectoryDescendants)
+                    self.containerURL, includingPropertiesForKeys: [], options: .SkipsSubdirectoryDescendants)
                 
                 let sqliteUrls = urls.filter { nil != $0.absoluteString.rangeOfString("\(self.modelName).sqlite") }
                 for url in sqliteUrls {
@@ -278,9 +237,8 @@ extension CoreDataStack {
             }
         }
         
-        //Any passed-in context must be a temporary concurrentContext
-        //because mainContext and writingContext are not exposed.
-        if let context = context {
+        //
+        if let context = context where context != mainContext {
             save(context) {
                 save(self.mainContext) {
                     save(self.writingContext) {
@@ -346,7 +304,7 @@ extension CoreDataStack {
         }
         
         let coordinator = NSPersistentStoreCoordinator(managedObjectModel: mom)
-        let url = directoryPath.URLByAppendingPathComponent("\(modelName).sqlite")
+        let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
         let storeType = inMemoryStore ? NSInMemoryStoreType : NSSQLiteStoreType
         
         let options = [

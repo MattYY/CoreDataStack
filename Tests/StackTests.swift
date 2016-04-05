@@ -15,7 +15,7 @@ class StackTests: XCTestCase {
         static let ModelName = "TestModel"
         static let EntityName = "TestEntity"
     }
-
+    
     
     func testMainContextSave() {
         
@@ -33,12 +33,10 @@ class StackTests: XCTestCase {
             error in
             expection.fulfill()
         }
-        
         waitForExpectationsWithTimeout(3.0, handler: nil)
         
         let fetchRequest = NSFetchRequest(entityName: Constants.EntityName)
         fetchRequest.fetchLimit = 1
-        
         do {
             let result = try context.executeFetchRequest(fetchRequest).first
             let obj = result as! TestEntity
@@ -46,24 +44,46 @@ class StackTests: XCTestCase {
         }
         catch { }
         
-        
         stack.deleteStore(andRejuvenate: false)
     }
-    
     
 }
 
 
 //MARK: - Utilities -
 extension StackTests {
-    
-    private func createStack(directory: String) -> CoreDataStack {
+    private func containerURL(name: String) -> NSURL {
+        let documentsPath = NSSearchPathForDirectoriesInDomains(.DocumentDirectory, .UserDomainMask, true)[0]
+        let fullPath = documentsPath.stringByAppendingString("/\(name)")
+        let url = NSURL(fileURLWithPath: fullPath, isDirectory: true)
         
+        //Create the container if necessary
+        var error:NSError?
+        if !url.checkResourceIsReachableAndReturnError(&error) {
+            do {
+                try NSFileManager.defaultManager().createDirectoryAtURL(
+                    url,
+                    withIntermediateDirectories: true,
+                    attributes: nil)
+            }
+            catch {
+                fatalError()
+            }
+        }
+        else {
+            print("File container already exists at path: \(url.absoluteString)")
+        }
+        
+        return url
+    }
+    
+    
+    private func createStack(containerName: String) -> CoreDataStack {
         let bundle = NSBundle(forClass: StackTests.self)
         let stack = CoreDataStack(
             bundle: bundle,
             modelName: Constants.ModelName,
-            containerName: directory,
+            containerURL: containerURL(containerName),
             inMemoryStore: false,
             logDebugOutput: true)
         
