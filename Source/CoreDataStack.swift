@@ -11,7 +11,7 @@ import UIKit
 import CoreData
 
 
-
+//MARK: - Stack -
 /// CoreDataStack is a basic coredata setup that enables the creation of contained (sandboxed) instances
 /// of a store and provides commonly used conveniences like deleting the store and creating an inMemory instance
 /// for testing.
@@ -32,8 +32,6 @@ import CoreData
 ///
 
 public struct CoreDataStack {
-    private var log = Log()
-    
     //MARK: private
     private let bundle: NSBundle
     private let modelName: String
@@ -50,7 +48,7 @@ public struct CoreDataStack {
     public typealias ErrorCompletionBlock = ((error: NSError?) -> Void)?
     public var logDebugOutput: Bool {
         didSet {
-            log.logDebugOutput = logDebugOutput
+            debuggingOn = logDebugOutput
         }
     }
     private(set) internal var mainContext: NSManagedObjectContext?
@@ -84,7 +82,7 @@ extension CoreDataStack {
     ///Tears down the stack by removing and niling the current persistentStoreCoordinator, niling the
     ///managedObjectModel and resets the writing and main contexts in a thread-safe manner. Subsequently,
     ///all the files with an sqlite* extension (the sqlite, sqlite-wal and sqlite-shm) are deleted from disk.
-    ///This deletion is done asyncronously on the `writingContext`.
+    ///This deletion is done asyncronously on the `writingContext` but is ultimately dispatched back to main.
     ///
     ///¡BE CAREFUL! as your DB data will not be recoverable after this method is called.
     ///
@@ -93,7 +91,7 @@ extension CoreDataStack {
     ///the stack instance useless but is valuable if you are planning on discontinuing the stack altogether
     ///and do not wish to incur the extra overhead of setting it up again.
     ///
-    ///The optional completion block param is called the main queue.
+    ///The optional completion block param is called on the main queue.
     public mutating func deleteStore(andRejuvenate rejuvenate: Bool = true, completion: ErrorCompletionBlock = nil) {
         //1.
         tearDown()
@@ -107,7 +105,7 @@ extension CoreDataStack {
     }
     
     ///Returns false if the stack was not setup, true if the stack was setup successfully.
-    private mutating func setup() -> Bool {
+    private mutating func setup() {
         setupStore()
         
         guard let _ = persistentStoreCoordinator,
@@ -115,11 +113,10 @@ extension CoreDataStack {
                   _ = mainContext,
                   _ = managedObjectModel else {
             
+            Log("Something didn't go right while setting up the stack.  Attempting teardown...")
             tearDown()
-            return false
+            return
         }
-        
-        return true
     }
     
     private mutating func tearDown() {
@@ -136,7 +133,7 @@ extension CoreDataStack {
             }
         }
         else {
-            log.debug("Stack not torn down because persistent store was not removed.")
+            Log("Stack not torn down because the persistent store could not be removed.")
         }
     }
     
@@ -155,10 +152,11 @@ extension CoreDataStack {
         mainContext = createMainContext()
     }
     
+    
     private func removePersistentStore() -> Bool {
         let lastStore = persistentStoreCoordinator?.persistentStores.last
         guard let store = lastStore else {
-            log.error("Not removing `persistentStoreCoordinator` because none exists to remove.")
+            Log("Not removing persistent store because there isn't one to remove.")
             return false
         }
         
@@ -167,11 +165,12 @@ extension CoreDataStack {
             return true
         }
         catch let error as NSError {
-            log.error("Unable to remove the persistent store with error: \(error.localizedDescription)")
+            Log("Unable to remove the persistent store with error: \(error.localizedDescription)")
             return false
         }
     }
 
+    
     private func removeDBFiles(completion: ErrorCompletionBlock = nil) {
         func completeOnMain(error: NSError? = nil) {
             dispatch_async(dispatch_get_main_queue()) {
@@ -193,7 +192,7 @@ extension CoreDataStack {
                         try fileManager.removeItemAtURL(url)
                     }
                     catch let error as NSError {
-                        self.log.error("Unable to remove sqlite file with error: \(error.localizedDescription)")
+                        Log("Unable to remove sqlite file with error: \(error.localizedDescription)")
                         completeOnMain(error)
                         
                         //Bail if we get at least one error.
@@ -204,7 +203,7 @@ extension CoreDataStack {
                 completeOnMain()
             }
             catch let error as NSError {
-                self.log.error("Unable to fetch contents of container (dataDirectory) with error: \(error.localizedDescription)")
+                Log("Unable to fetch contents of container (dataDirectory) with error: \(error.localizedDescription)")
                 completeOnMain(error)
             }
         }
@@ -213,7 +212,7 @@ extension CoreDataStack {
 
 
 //MARK: - Context API -
-///<><  Contexts ><>
+///<>< Contexts ><>
 extension CoreDataStack {
     
     ///Save down through the context chain to disk.  If no context is specified `mainContext` is assumed.
@@ -231,7 +230,7 @@ extension CoreDataStack {
                     saveCompletion?()
                 }
                 catch let error as NSError {
-                    self.log.error("Context save failed with error: \(error.localizedDescription)")
+                    Log("Context save failed with error: \(error.localizedDescription)")
                     complete(error)
                 }
             }
@@ -261,7 +260,7 @@ extension CoreDataStack {
     ///`saveToDisk` function.
     public func concurrentContext() -> NSManagedObjectContext? {
         guard let mc = self.mainContext else {
-            log.error("Unable to create concurrent context because the mainContext is not currently set up.")
+            Log("Unable to create concurrent context because the mainContext is not currently set up.")
             return nil
         }
         
@@ -283,11 +282,13 @@ extension CoreDataStack {
         
         let modelURL = bundle.URLForResource(modelName, withExtension: "momd")
         guard let mURL = modelURL else {
-            fatalError("Unabled able to find object model file with name: \(modelName)")
+            Log("Unabled able to find object model file with name: \(modelName)")
+            return nil
         }
         
         guard let managedObjectModel = NSManagedObjectModel(contentsOfURL: mURL) else {
-            fatalError("Unabled to instantiate `managedObjectModel` with name \"\(modelName)\".  Bailing.")
+            Log("Unabled to instantiate `managedObjectModel` with name \"\(modelName)\".  Bailing.")
+            return nil
         }
         
         return managedObjectModel
@@ -296,7 +297,8 @@ extension CoreDataStack {
     
     private mutating func createPersistentStoreCoordinator() -> NSPersistentStoreCoordinator? {
         guard let mom = managedObjectModel else {
-            fatalError("Attempting to create a `persistentStoreCoordinator` but one already exists.")
+            Log("Attempting to create a `persistentStoreCoordinator` but one already exists.")
+            return nil
         }
         
         guard persistentStoreCoordinator == nil else {
@@ -306,7 +308,6 @@ extension CoreDataStack {
         let coordinator = NSPersistentStoreCoordinator(managedObjectModel: mom)
         let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
         let storeType = inMemoryStore ? NSInMemoryStoreType : NSSQLiteStoreType
-        
         let options = [
             NSMigratePersistentStoresAutomaticallyOption : true,
             NSInferMappingModelAutomaticallyOption : true
@@ -316,7 +317,7 @@ extension CoreDataStack {
             try coordinator.addPersistentStoreWithType(storeType, configuration: nil, URL: url, options: options)
         }
         catch let error as NSError {
-            log.error("Attempt to add `persistentStoreCoordinator` failed with error: \(error.localizedDescription)")
+            Log("Attempt to add `persistentStoreCoordinator` failed with error: \(error.localizedDescription)")
             self.removeDBFiles()
         }
         
@@ -326,7 +327,7 @@ extension CoreDataStack {
     
     private func createWritingContext() -> NSManagedObjectContext? {
         guard let psc = persistentStoreCoordinator else {
-            log.debug("Attempting to create `writingContext` before the `persistentStoreCoordinator` is set up.")
+            Log("Attempting to create `writingContext` before the `persistentStoreCoordinator` is set up.")
             return nil
         }
         
@@ -342,7 +343,7 @@ extension CoreDataStack {
     
     private func createMainContext() -> NSManagedObjectContext? {
         guard let wc = writingContext else {
-            log.error("Attempting to create `mainContext` before the persistent store coordinator is setup.")
+            Log("Attempting to create `mainContext` before the persistent store coordinator is setup.")
             return nil
         }
         
@@ -357,28 +358,16 @@ extension CoreDataStack {
 }
 
 
-
-//MARK: - Utilities -
-private struct Log {
-    var logDebugOutput: Bool = true
-    
-    func debug(message: String, file: String = #file, function: String = #function, line: Int = #line) {
-        guard logDebugOutput else {
-            return
-        }
-        
-        print("+")
-        print("File: \(file)")
-        print("Function: \(function), Line: \(line)")
-        debugPrint(message)
-        print("+")
+//MARK: - Log -
+private var debuggingOn: Bool = false
+private func Log(message: String, file: String = #file, function: String = #function, line: Int = #line) -> Void {
+    guard debuggingOn else {
+        return
     }
     
-    private func error(message: String, file: String = #file, function: String = #function, line: Int = #line) {
-        print("+")
-        print("File: \(file)")
-        print("Function: \(function), Line: \(line)")
-        debugPrint(message)
-        print("+")
-    }
+    print("<>< CoreDataStack ><>")
+    print("File: \(file)")
+    print("Function: \(function), Line: \(line)")
+    debugPrint(message)
+    print("<>")
 }
