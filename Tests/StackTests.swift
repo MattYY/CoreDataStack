@@ -178,6 +178,7 @@ class StackTests: XCTestCase {
                         return
                     }
                     
+                    //make sure the fetching context is clean
                     mainContext.reset()
                     
                     let result = try mainContext.executeFetchRequest(fetchRequest)
@@ -189,6 +190,44 @@ class StackTests: XCTestCase {
                 catch { }
             }
         }
+        
+        waitForExpectationsWithTimeout(10.0, handler: nil)
+        
+        //clean up
+        deleteContainerAtPath(containerURL)
+    }
+    
+    
+    
+    func testConcurrentSaveDelete() {
+        let containerURL = createContainerFromName("TestDir")
+        var stack = createStack(containerURL)
+        
+        guard let originalContext = stack.mainContext else {
+            XCTFail()
+            return
+        }
+        
+        let expectation = expectationWithDescription("SaveStore")
+        for i in 0..<1000 {
+            let entity = self.createTestObj(originalContext)
+            entity.testString = "string\(i)"
+        }
+        
+        //destroy and rebuild mainContext
+        stack.deleteStore(andRejuvenate: true)
+        stack.saveToDisk() { (error) in
+            let fetchRequest = NSFetchRequest(entityName: Constants.EntityName)
+            do {
+                let result = try originalContext.executeFetchRequest(fetchRequest)
+                let entities = result as? [TestEntity]
+                
+                XCTAssertEqual(entities!.count, 0)
+                expectation.fulfill()
+            }
+            catch { }
+        }
+        
         
         waitForExpectationsWithTimeout(10.0, handler: nil)
         
@@ -240,7 +279,7 @@ extension StackTests {
             modelName: Constants.ModelName,
             containerURL: containerURL,
             inMemoryStore: false,
-            logDebugOutput: true)
+            logOutput: true)
         
         return stack
     }

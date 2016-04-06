@@ -11,7 +11,8 @@ import UIKit
 import CoreData
 
 
-//MARK: - Stack -
+/// ><><><><><><><
+///
 /// CoreDataStack is a basic coredata setup that enables the creation of contained (sandboxed) instances
 /// of a store and provides commonly used conveniences like deleting the store and creating an inMemory instance
 /// for testing.
@@ -30,9 +31,9 @@ import CoreData
 ///             |
 ///     [Temporary Context] -> concurrent, spawn at will
 ///
-
+/// ><><><><><><><
 public struct CoreDataStack {
-    //MARK: private
+    //MARK: Properties
     private let bundle: NSBundle
     private let modelName: String
     private let containerURL: NSURL
@@ -42,23 +43,17 @@ public struct CoreDataStack {
     private var managedObjectModel: NSManagedObjectModel?
     private var writingContext: NSManagedObjectContext?
     
-    
-    //MARK: public
-    ///Set to true to log debugging info to console.  Errors are always logged.
+    ///Reused completion block pattern that is used for completions that may contain an NSError.
     public typealias ErrorCompletionBlock = ((error: NSError?) -> Void)?
-    public var logDebugOutput: Bool {
-        didSet {
-            debuggingOn = logDebugOutput
-        }
-    }
+    
+    ///The main context. a NSManagedObjectContext that is created with the MainQueueConcurrencyType concurrencyType.
     private(set) internal var mainContext: NSManagedObjectContext?
 }
 
 
-//MARK: - LifeCycle -
-///<>< Lifecycle ><>
-extension CoreDataStack {
-    //MARK: Public
+//MARK: - API -
+/// ><><><><><><><
+public extension CoreDataStack {
     
     /// Create a stack instance.
     /// - `bundle` (required): NSBundle in which your target NSManagedObjectModel can be found.
@@ -69,13 +64,13 @@ extension CoreDataStack {
     ///
     /// The underlying persistant store is set hardcoded to use an sqlite database and as basic migration options
     /// (`NSMigratePersistentStoresAutomaticallyOption` and `NSInferMappingModelAutomaticallyOption`) set to true.
-    public init(bundle: NSBundle, modelName: String, containerURL: NSURL, inMemoryStore: Bool = false, logDebugOutput: Bool = false) {
+    public init(bundle: NSBundle, modelName: String, containerURL: NSURL, inMemoryStore: Bool = false, logOutput: Bool = false) {
         self.bundle = bundle
         self.modelName = modelName
         self.containerURL = containerURL
         self.inMemoryStore = inMemoryStore
-        self.logDebugOutput = logDebugOutput
-
+        
+        loggingOn = logOutput
         setup()
     }
     
@@ -93,16 +88,84 @@ extension CoreDataStack {
     ///
     ///The optional completion block param is called on the main queue.
     public mutating func deleteStore(andRejuvenate rejuvenate: Bool = true, completion: ErrorCompletionBlock = nil) {
+
         //1.
-        tearDown()
+        self.tearDown()
         
         //2.
-        removeDBFiles(completion)
+        self.removeDBFiles(completion)
         
         if rejuvenate {
-            setup()
+            self.setup()
         }
     }
+    
+    
+    ///Save down through the context chain to disk.
+    /// - `context` : optional MOC.  If nothing is passed, mainContext is assumed.
+    /// - `completion` : optional completion block. Called on the main queue.
+    ///
+    public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ErrorCompletionBlock = nil) {
+        func completeOnMain(error: NSError? = nil) {
+            dispatch_async(dispatch_get_main_queue()) {
+                completion?(error: error)
+            }
+        }
+        
+        func save(context: NSManagedObjectContext?, saveCompletion: (() -> Void)? = nil) {
+            guard let ctx = context else {
+                Log("Save called on an nil context.  This means the mainContext is nil.")
+                completeOnMain()
+                return
+            }
+            
+            ctx.performBlock {
+                do {
+                    try ctx.save()
+                    saveCompletion?()
+                }
+                catch let error as NSError {
+                    Log("Context (\(ctx)) save failed with error: \(error.localizedDescription)")
+                    completeOnMain(error)
+                }
+            }
+        }
+        
+        if let context = context where context != mainContext {
+            //Propogate save down through the main context
+            save(context) {
+                save(self.mainContext) {
+                    completeOnMain()
+                }
+            }
+        }
+        else {
+            save(self.mainContext) {
+                completeOnMain()
+            }
+        }
+    }
+    
+    
+    /// Creates a concurrent context that inherits from the mainContext
+    /// and will propogate its save down through the `mainContext` and ultimately to the
+    /// `writingContext` when passed to the `saveToDisk` function.
+    public func concurrentContext() -> NSManagedObjectContext? {
+        guard let mc = self.mainContext else {
+            Log("Unable to create concurrent context because the mainContext is not currently set up.")
+            return nil
+        }
+        
+        let managedObjectContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
+        managedObjectContext.parentContext = mc
+        return managedObjectContext
+    }
+    
+}
+
+
+//MARK: - LifeCycle -
+private extension CoreDataStack {
     
     ///Returns false if the stack was not setup, true if the stack was setup successfully.
     private mutating func setup() {
@@ -113,7 +176,7 @@ extension CoreDataStack {
                   _ = mainContext,
                   _ = managedObjectModel else {
             
-            Log("Something didn't go right while setting up the stack.  Attempting teardown...")
+            Log("Something didn't go right while setting up the stack.  Attempting tear down...")
             tearDown()
             return
         }
@@ -124,20 +187,16 @@ extension CoreDataStack {
             managedObjectModel = nil
             persistentStoreCoordinator = nil
             
-            writingContext?.performBlockAndWait{
-                self.writingContext?.reset()
-            }
-            
-            mainContext?.performBlockAndWait{
-                self.mainContext?.reset()
-            }
+            mainContext?.reset()
+            writingContext?.reset()
+
         }
         else {
             Log("Stack not torn down because the persistent store could not be removed.")
         }
     }
     
-    //MARK: Private
+    
     private mutating func setupStore() {
         //1.
         managedObjectModel = createManagedObjectModel()
@@ -178,7 +237,8 @@ extension CoreDataStack {
             }
         }
         
-        //Block the writing context while
+        //Block the mainContext while the sqlite files are removed asynchronously to ensure the
+        //files are totally before any other activity occurs (on the main context).
         writingContext?.performBlockAndWait {
             let fileManager = NSFileManager.defaultManager()
             
@@ -203,69 +263,10 @@ extension CoreDataStack {
                 completeOnMain()
             }
             catch let error as NSError {
-                Log("Unable to fetch contents of container (dataDirectory) with error: \(error.localizedDescription)")
+                Log("Unable to fetch contents of container directory with error: \(error.localizedDescription)")
                 completeOnMain(error)
             }
         }
-    }
-}
-
-
-//MARK: - Context API -
-///<>< Contexts ><>
-extension CoreDataStack {
-    
-    ///Save down through the context chain to disk.
-    /// - `context` : optional MOC.  If nothing is passed, mainContext is assumed.
-    /// - `completion` : optional completion block. Called on the main queue.
-    ///
-    public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ErrorCompletionBlock = nil) {
-        func complete(error: NSError? = nil) {
-            dispatch_async(dispatch_get_main_queue(), {
-                completion?(error: error)
-            })
-        }
-        
-        func save(context: NSManagedObjectContext?, saveCompletion: (() -> Void)? = nil) {
-            context?.performBlock {
-                do {
-                    try context?.save()
-                    saveCompletion?()
-                }
-                catch let error as NSError {
-                    Log("Context save failed with error: \(error.localizedDescription)")
-                    complete(error)
-                }
-            }
-        }
-        
-        if let context = context where context != mainContext {
-            //Propogate save down through the main context
-            save(context) {
-                save(self.mainContext) {
-                    complete()
-                }
-            }
-        }
-        else {
-            save(self.mainContext) {
-                complete()
-            }
-        }
-    }
-    
-    /// Creates a concurrent context that inherits from the mainContext
-    /// and will propogate its save down through the `mainContext` and ultimately to the
-    /// `writingContext` when passed to the `saveToDisk` function.
-    public func concurrentContext() -> NSManagedObjectContext? {
-        guard let mc = self.mainContext else {
-            Log("Unable to create concurrent context because the mainContext is not currently set up.")
-            return nil
-        }
-        
-        let managedObjectContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
-        managedObjectContext.parentContext = mc
-        return managedObjectContext
     }
 }
 
@@ -357,10 +358,12 @@ extension CoreDataStack {
 }
 
 
+
+
 //MARK: - Log -
-private var debuggingOn: Bool = false
+private var loggingOn: Bool = false
 private func Log(message: String, file: String = #file, function: String = #function, line: Int = #line) -> Void {
-    guard debuggingOn else {
+    guard loggingOn else {
         return
     }
     
@@ -370,3 +373,4 @@ private func Log(message: String, file: String = #file, function: String = #func
     debugPrint(message)
     print("<>")
 }
+
