@@ -17,9 +17,76 @@ class StackTests: XCTestCase {
     }
     
     
-    func testMainContextSave() {
+    //Test delete removes only intended files (sqlite)
+    func testDeleteSQLiteFiles() {
+        let containerURL = createContainerFromName("TestDir")
         
-        var stack = createStack("TestDir")
+        //create sqlite
+        var stack = createStack(containerURL)
+        let fileManager = NSFileManager.defaultManager()
+        
+        let newFilePath = containerURL.relativePath?.stringByAppendingString("/randomFile.test")
+        fileManager.createFileAtPath(newFilePath!, contents: nil, attributes: nil)
+        
+        //delete sqlite
+        stack.deleteStore(andRejuvenate: false)
+        
+        do {
+            let urls = try fileManager.contentsOfDirectoryAtURL(
+                containerURL, includingPropertiesForKeys: [], options: .SkipsSubdirectoryDescendants)
+            
+            let sqliteUrls = urls.filter { nil != $0.absoluteString.rangeOfString("\(Constants.ModelName).sqlite") }
+            let testFiles = urls.filter { nil != $0.absoluteString.rangeOfString("randomFile.test") }
+            
+            XCTAssertEqual(sqliteUrls.count, 0)
+            XCTAssertEqual(testFiles.count, 1)
+            
+            //Clean up
+            do {
+                try fileManager.removeItemAtURL(testFiles[0])
+            }
+            catch {}
+        } catch {}
+        
+        //clean up
+        deleteContainerAtPath(containerURL)
+    }
+    
+    
+    func testDeleteRejuvenation() {
+        let containerURL = createContainerFromName("TestDir")
+        
+        //create sqlite
+        var stack = createStack(containerURL)
+        let fileManager = NSFileManager.defaultManager()
+        
+        let testSQLFileCount = {
+            do {
+                let urls = try fileManager.contentsOfDirectoryAtURL(
+                    containerURL, includingPropertiesForKeys: [], options: .SkipsSubdirectoryDescendants)
+                
+                let sqliteUrls = urls.filter { nil != $0.absoluteString.rangeOfString("\(Constants.ModelName).sqlite") }
+                XCTAssertEqual(sqliteUrls.count, 3)
+            } catch {}
+        }
+        
+        //pre
+        testSQLFileCount()
+
+        //delete sqlite
+        stack.deleteStore(andRejuvenate: true)
+        
+        //post
+        testSQLFileCount()
+        
+        //clean up
+        deleteContainerAtPath(containerURL)
+    }
+    
+    
+    func testMainContextSave() {
+        let containerURL = createContainerFromName("TestDir")
+        let stack = createStack(containerURL)
         
         guard let context = stack.mainContext else {
             fatalError()
@@ -43,16 +110,19 @@ class StackTests: XCTestCase {
             XCTAssertEqual(obj.testString, "BLAH")
         }
         catch { }
-        
-        stack.deleteStore(andRejuvenate: false)
+
+        //clean up container
+        deleteContainerAtPath(containerURL)
     }
-    
 }
+
+
+
 
 
 //MARK: - Utilities -
 extension StackTests {
-    private func containerURL(name: String) -> NSURL {
+    private func createContainerFromName(name: String) -> NSURL {
         let documentsPath = NSSearchPathForDirectoriesInDomains(.DocumentDirectory, .UserDomainMask, true)[0]
         let fullPath = documentsPath.stringByAppendingString("/\(name)")
         let url = NSURL(fileURLWithPath: fullPath, isDirectory: true)
@@ -70,20 +140,24 @@ extension StackTests {
                 fatalError()
             }
         }
-        else {
-            print("File container already exists at path: \(url.absoluteString)")
-        }
         
+        print("Container URL: \(url.absoluteString)")
         return url
     }
     
+    private func deleteContainerAtPath(path: NSURL) {
+        do {
+            try NSFileManager.defaultManager().removeItemAtURL(path)
+        }
+        catch {}
+    }
     
-    private func createStack(containerName: String) -> CoreDataStack {
+    private func createStack(containerURL: NSURL) -> CoreDataStack {
         let bundle = NSBundle(forClass: StackTests.self)
         let stack = CoreDataStack(
             bundle: bundle,
             modelName: Constants.ModelName,
-            containerURL: containerURL(containerName),
+            containerURL: containerURL,
             inMemoryStore: false,
             logDebugOutput: true)
         
