@@ -16,7 +16,7 @@ class StackTests: XCTestCase {
         static let EntityName = "TestEntity"
     }
     
-    
+    //MARK: Delete
     //Test delete removes only intended files (sqlite)
     func testDeleteSQLiteFiles() {
         let containerURL = createContainerFromName("TestDir")
@@ -52,8 +52,8 @@ class StackTests: XCTestCase {
         deleteContainerAtPath(containerURL)
     }
     
-    
-    func testDeleteRejuvenation() {
+    //Test sqlite files are rejuvenated
+    func testDeleteFileRejuvenation() {
         let containerURL = createContainerFromName("TestDir")
         
         //create sqlite
@@ -84,6 +84,44 @@ class StackTests: XCTestCase {
     }
     
     
+    func testRejuvenatedStackSave() {
+        let containerURL = createContainerFromName("TestDir")
+        var stack = createStack(containerURL)
+
+        //rejuvenate the stack
+        stack.deleteStore(andRejuvenate: true)
+
+        guard let context = stack.mainContext else {
+            XCTFail()
+            return
+        }
+        
+        let entity = createTestObj(context)
+        entity.testString = "BLAH"
+        
+        let expectation = expectationWithDescription("SaveStore")
+        stack.saveToDisk() {
+            error in
+            expectation.fulfill()
+        }
+        waitForExpectationsWithTimeout(3.0, handler: nil)
+        
+        let fetchRequest = NSFetchRequest(entityName: Constants.EntityName)
+        fetchRequest.fetchLimit = 1
+        do {
+            let result = try context.executeFetchRequest(fetchRequest).first
+            let obj = result as! TestEntity
+            XCTAssertEqual(obj.testString, "BLAH")
+        }
+        catch { }
+        
+        //clean up
+        deleteContainerAtPath(containerURL)
+    }
+    
+    
+    
+    //MARK: Save
     func testMainContextSave() {
         let containerURL = createContainerFromName("TestDir")
         let stack = createStack(containerURL)
@@ -95,10 +133,10 @@ class StackTests: XCTestCase {
         let entity = createTestObj(context)
         entity.testString = "BLAH"
         
-        let expection = expectationWithDescription("SaveStore")
+        let expectation = expectationWithDescription("SaveStore")
         stack.saveToDisk() {
             error in
-            expection.fulfill()
+            expectation.fulfill()
         }
         waitForExpectationsWithTimeout(3.0, handler: nil)
         
@@ -111,7 +149,50 @@ class StackTests: XCTestCase {
         }
         catch { }
 
-        //clean up container
+        //clean up
+        deleteContainerAtPath(containerURL)
+    }
+    
+    
+    func testConcurrentContextSave() {
+        let containerURL = createContainerFromName("TestDir")
+        let stack = createStack(containerURL)
+
+        guard let context = stack.concurrentContext() else {
+            XCTFail()
+            return
+        }
+        
+        let expectation = expectationWithDescription("SaveStore")
+        context.performBlock {
+            for i in 0..<1000 {
+                let entity = self.createTestObj(context)
+                entity.testString = "string\(i)"
+            }
+            
+            stack.saveToDisk(context) { (error) in
+                let fetchRequest = NSFetchRequest(entityName: Constants.EntityName)
+                do {
+                    guard let mainContext = stack.mainContext else {
+                        XCTFail()
+                        return
+                    }
+                    
+                    mainContext.reset()
+                    
+                    let result = try mainContext.executeFetchRequest(fetchRequest)
+                    let entities = result as? [TestEntity]
+                    
+                    XCTAssertEqual(entities!.count, 1000)
+                    expectation.fulfill()
+                }
+                catch { }
+            }
+        }
+        
+        waitForExpectationsWithTimeout(10.0, handler: nil)
+        
+        //clean up
         deleteContainerAtPath(containerURL)
     }
 }

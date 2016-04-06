@@ -65,7 +65,7 @@ extension CoreDataStack {
     /// - `modelName` (required): must correspond with the name of the backing NSManagedObjectModel
     /// - `containerURL` (required): is a URL that points to the folder in which the backing sqlite files will be stored.
     /// - `inMemoryStore` :defaults to false. if true, will create the persistant store using the `NSInMemoryStoreType`
-    /// - `logDebugOutput`:defaults to false. if true, will log helpful debugging output.
+    /// - `logDebugOutput`:defaults to false. if true, will log helpful errors/debugging output.
     ///
     /// The underlying persistant store is set hardcoded to use an sqlite database and as basic migration options
     /// (`NSMigratePersistentStoresAutomaticallyOption` and `NSInferMappingModelAutomaticallyOption`) set to true.
@@ -178,7 +178,7 @@ extension CoreDataStack {
             }
         }
         
-        //Remove files on the writingContext to make sure nothing is writing when the files are removed.
+        //Block the writing context while
         writingContext?.performBlockAndWait {
             let fileManager = NSFileManager.defaultManager()
             
@@ -215,7 +215,10 @@ extension CoreDataStack {
 ///<>< Contexts ><>
 extension CoreDataStack {
     
-    ///Save down through the context chain to disk.  If no context is specified `mainContext` is assumed.
+    ///Save down through the context chain to disk.
+    /// - `context` : optional MOC.  If nothing is passed, mainContext is assumed.
+    /// - `completion` : optional completion block. Called on the main queue.
+    ///
     public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ErrorCompletionBlock = nil) {
         func complete(error: NSError? = nil) {
             dispatch_async(dispatch_get_main_queue(), {
@@ -236,28 +239,24 @@ extension CoreDataStack {
             }
         }
         
-        //
         if let context = context where context != mainContext {
+            //Propogate save down through the main context
             save(context) {
                 save(self.mainContext) {
-                    save(self.writingContext) {
-                        complete()
-                    }
+                    complete()
                 }
             }
         }
         else {
             save(self.mainContext) {
-                //save(self.writingContext) {
-                    complete()
-                //}
+                complete()
             }
         }
     }
     
-    ///Spawn a temporary concurrent context.  This context inherits from the mainContext and will propogate
-    ///it's save through the `mainContext` and ultimately to the `writingContext` when passed to the
-    ///`saveToDisk` function.
+    /// Creates a concurrent context that inherits from the mainContext
+    /// and will propogate its save down through the `mainContext` and ultimately to the
+    /// `writingContext` when passed to the `saveToDisk` function.
     public func concurrentContext() -> NSManagedObjectContext? {
         guard let mc = self.mainContext else {
             Log("Unable to create concurrent context because the mainContext is not currently set up.")
