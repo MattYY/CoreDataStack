@@ -43,7 +43,7 @@ public struct CoreDataStack {
     private var managedObjectModel: NSManagedObjectModel?
     private var writingContext: NSManagedObjectContext?
     
-    private var invalidContext: Bool {
+    private var contextsInvalid: Bool {
         guard let _ = mainContext, _ = writingContext else {
             return false
         }
@@ -68,8 +68,8 @@ public struct CoreDataStack {
     }
     
     
-    ///Reused completion block pattern that is used for completions that may contain an NSError.
-    public typealias ErrorCompletionBlock = (ErrorType? -> Void)?
+    ///Reused completion block pattern that is used for completions.
+    public typealias ErrorCompletionBlock = (() throws -> Void)?
     
     ///The main context. a NSManagedObjectContext that is created with the MainQueueConcurrencyType concurrencyType.
     private(set) internal var mainContext: NSManagedObjectContext?
@@ -112,14 +112,20 @@ public extension CoreDataStack {
     ///and do not wish to incur the extra overhead of setting it up again.
     ///
     ///The optional completion block param is called on the main queue.
-    public mutating func deleteStore(andRejuvenate rejuvenate: Bool = true, completion: ErrorCompletionBlock = nil) {
-        guard let mc = mainContext, wc = writingContext else {
-            onMain(completion, withError: CoreDataStackError.InvalidStackState)
+    
+    private func onMain(completion: ErrorCompletionBlock? -> Void, _ block: ErrorCompletionBlock)  {
+        dispatch_async(dispatch_get_main_queue()) {
+            completion(block)
+        }
+    }
+    
+    public mutating func deleteStore(andRejuvenate rejuvenate: Bool = true, completion: (ErrorCompletionBlock? -> Void)?) {
+        if self.contextsInvalid {
+            completion?({ throw CoreDataStackError.InvalidContextState })
             return
         }
         
-        
-        
+        /*
         func doDeletion() {
             do {
                 try self.removeDBFiles()
@@ -144,6 +150,7 @@ public extension CoreDataStack {
         catch let error as NSError {
             onMain(completion, withError: error)
         }
+        */
     }
     
     
@@ -151,7 +158,14 @@ public extension CoreDataStack {
     /// - `context` : optional MOC.  If nothing is passed, mainContext is assumed.
     /// - `completion` : optional completion block. Called on the main queue.
     ///
-    public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ErrorCompletionBlock = nil) {
+    public func saveToDisk(context: NSManagedObjectContext? = nil, completion: (ErrorCompletionBlock? -> Void)?) {
+        if self.contextsInvalid {
+            completion?({ throw CoreDataStackError.InvalidContextState })
+            return
+        }
+        
+        
+        /*
         guard let mc = mainContext, wc = writingContext else {
             onMain(completion, withError: CoreDataStackError.InvalidStackState)
             return
@@ -183,6 +197,7 @@ public extension CoreDataStack {
                 self.onMain(completion)
             }
         }
+        */
     }
     
     
@@ -390,11 +405,6 @@ extension CoreDataStack {
 
 extension CoreDataStack {
     
-    private func onMain(completion: (ErrorType? -> Void)?, withError error: ErrorType? = nil)  {
-        dispatch_async(dispatch_get_main_queue()) {
-            completion?(error)
-        }
-    }
 }
 
 
