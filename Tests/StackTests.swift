@@ -198,8 +198,51 @@ class StackTests: XCTestCase {
     }
     
     
+    func testDeleteStoreResetsMainContext() {
+        let containerURL = createContainerFromName("TestDir")
+        var stack = createStack(containerURL)
+        
+        guard let originalContext = stack.concurrentContext() else {
+            XCTFail()
+            return
+        }
+        
+        let expectation = expectationWithDescription("SaveStore")
+        for i in 0..<10000 {
+            let entity = self.createTestObj(originalContext)
+            entity.testString = "string\(i)"
+        }
+        
+        //destroy and rebuild mainContext
+        stack.deleteStore(andRejuvenate: true) {
+            error in
+            
+            //then save
+            stack.saveToDisk(originalContext) {
+                error in
+                                
+                let fetchRequest = NSFetchRequest(entityName: Constants.EntityName)
+                do {
+                    let result = try originalContext.executeFetchRequest(fetchRequest)
+                    let entities = result as? [TestEntity]
+                    
+                    XCTAssertEqual(entities!.count, 0)
+                    expectation.fulfill()
+                }
+                catch let error as NSError {
+                    print(error)
+                }
+            }
+        }
+        
+        waitForExpectationsWithTimeout(10.0, handler: nil)
+        
+        //clean up
+        deleteContainerAtPath(containerURL)
+    }
     
-    func testConcurrentSaveDelete() {
+    /*
+    func testSaveToDeletedReturnsError() {
         let containerURL = createContainerFromName("TestDir")
         var stack = createStack(containerURL)
         
@@ -209,14 +252,16 @@ class StackTests: XCTestCase {
         }
         
         let expectation = expectationWithDescription("SaveStore")
-        for i in 0..<1000 {
+        for i in 0..<10000 {
             let entity = self.createTestObj(originalContext)
             entity.testString = "string\(i)"
         }
         
-        //destroy and rebuild mainContext
-        stack.deleteStore(andRejuvenate: true)
-        stack.saveToDisk() { (error) in
+        //destroy
+        stack.deleteStore(andRejuvenate: false)
+        
+        //then save
+        stack.saveToDisk(originalContext) { (error) in
             let fetchRequest = NSFetchRequest(entityName: Constants.EntityName)
             do {
                 let result = try originalContext.executeFetchRequest(fetchRequest)
@@ -225,15 +270,15 @@ class StackTests: XCTestCase {
                 XCTAssertEqual(entities!.count, 0)
                 expectation.fulfill()
             }
-            catch { }
+            catch {}
         }
-        
         
         waitForExpectationsWithTimeout(10.0, handler: nil)
         
         //clean up
         deleteContainerAtPath(containerURL)
     }
+    */
 }
 
 

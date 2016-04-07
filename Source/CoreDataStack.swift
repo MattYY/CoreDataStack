@@ -43,8 +43,33 @@ public struct CoreDataStack {
     private var managedObjectModel: NSManagedObjectModel?
     private var writingContext: NSManagedObjectContext?
     
+    private var invalidContext: Bool {
+        guard let _ = mainContext, _ = writingContext else {
+            return false
+        }
+        
+        return true
+    }
+    
+    //Custom Errors
+    public enum CoreDataStackError: ErrorType, CustomDebugStringConvertible {
+        case InvalidContextState
+        
+        public var debugDescription: String {
+            switch self {
+            case .InvalidContextState:
+                let message = "This stack currently has a nil `mainContext` and/or a nil `writingContext`.  This is" +
+                              "can happen if the `deleteStore` method is called without the rejuvenate flag set to" +
+                              "true.  The only way to fix is to set up a new stack from scratch."
+                
+                return message
+            }
+        }
+    }
+    
+    
     ///Reused completion block pattern that is used for completions that may contain an NSError.
-    public typealias ErrorCompletionBlock = ((error: NSError?) -> Void)?
+    public typealias ErrorCompletionBlock = (ErrorType? -> Void)?
     
     ///The main context. a NSManagedObjectContext that is created with the MainQueueConcurrencyType concurrencyType.
     private(set) internal var mainContext: NSManagedObjectContext?
@@ -88,15 +113,36 @@ public extension CoreDataStack {
     ///
     ///The optional completion block param is called on the main queue.
     public mutating func deleteStore(andRejuvenate rejuvenate: Bool = true, completion: ErrorCompletionBlock = nil) {
-
-        //1.
-        self.tearDown()
+        guard let mc = mainContext, wc = writingContext else {
+            onMain(completion, withError: CoreDataStackError.InvalidStackState)
+            return
+        }
         
-        //2.
-        self.removeDBFiles(completion)
         
-        if rejuvenate {
-            self.setup()
+        
+        func doDeletion() {
+            do {
+                try self.removeDBFiles()
+                onMain(completion)
+            }
+            catch let error as NSError {
+                onMain(completion, withError: error)
+            }
+        }
+        
+        do {
+            try self.tearDown()            
+            if let writingContext = writingContext {
+                writingContext.performBlock {
+                    doDeletion()
+                }
+            }
+            else {
+                doDeletion()
+            }
+        }
+        catch let error as NSError {
+            onMain(completion, withError: error)
         }
     }
     
@@ -106,27 +152,20 @@ public extension CoreDataStack {
     /// - `completion` : optional completion block. Called on the main queue.
     ///
     public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ErrorCompletionBlock = nil) {
-        func completeOnMain(error: NSError? = nil) {
-            dispatch_async(dispatch_get_main_queue()) {
-                completion?(error: error)
-            }
+        guard let mc = mainContext, wc = writingContext else {
+            onMain(completion, withError: CoreDataStackError.InvalidStackState)
+            return
         }
         
         func save(context: NSManagedObjectContext?, saveCompletion: (() -> Void)? = nil) {
-            guard let ctx = context else {
-                Log("Save called on an nil context.  This means the mainContext is nil.")
-                completeOnMain()
-                return
-            }
-            
-            ctx.performBlock {
+            context?.performBlock {
                 do {
-                    try ctx.save()
+                    try context?.save()
                     saveCompletion?()
                 }
                 catch let error as NSError {
-                    Log("Context (\(ctx)) save failed with error: \(error.localizedDescription)")
-                    completeOnMain(error)
+                    Log("Context (\(context)) save failed with error: \(error.localizedDescription)")
+                    self.onMain(completion, withError: error)
                 }
             }
         }
@@ -135,13 +174,13 @@ public extension CoreDataStack {
             //Propogate save down through the main context
             save(context) {
                 save(self.mainContext) {
-                    completeOnMain()
+                    self.onMain(completion)
                 }
             }
         }
         else {
             save(self.mainContext) {
-                completeOnMain()
+                self.onMain(completion)
             }
         }
     }
@@ -177,22 +216,27 @@ private extension CoreDataStack {
                   _ = managedObjectModel else {
             
             Log("Something didn't go right while setting up the stack.  Attempting tear down...")
-            tearDown()
+            do {
+                try self.tearDown()
+            }
+            catch{}
             return
         }
     }
     
-    private mutating func tearDown() {
-        if removePersistentStore() {
+    private mutating func tearDown() throws {
+        do {
+            try removePersistentStore()
+            
             managedObjectModel = nil
             persistentStoreCoordinator = nil
-            
-            mainContext?.reset()
-            writingContext?.reset()
-
+            self.mainContext?.reset()
+            self.mainContext = nil
+            self.writingContext?.reset()
+            self.writingContext = nil
         }
-        else {
-            Log("Stack not torn down because the persistent store could not be removed.")
+        catch let error as NSError {
+            throw error
         }
     }
     
@@ -212,60 +256,43 @@ private extension CoreDataStack {
     }
     
     
-    private func removePersistentStore() -> Bool {
+    private func removePersistentStore() throws {
         let lastStore = persistentStoreCoordinator?.persistentStores.last
         guard let store = lastStore else {
             Log("Not removing persistent store because there isn't one to remove.")
-            return false
+            return
         }
         
         do {
             try self.persistentStoreCoordinator?.removePersistentStore(store)
-            return true
         }
         catch let error as NSError {
             Log("Unable to remove the persistent store with error: \(error.localizedDescription)")
-            return false
+            throw error
         }
     }
 
     
-    private func removeDBFiles(completion: ErrorCompletionBlock = nil) {
-        func completeOnMain(error: NSError? = nil) {
-            dispatch_async(dispatch_get_main_queue()) {
-                completion?(error: error)
+    private func removeDBFiles() throws {
+        let fileManager = NSFileManager.defaultManager()
+        do {
+            let urls = try fileManager.contentsOfDirectoryAtURL(
+                self.containerURL, includingPropertiesForKeys: [], options: .SkipsSubdirectoryDescendants)
+            
+            let sqliteUrls = urls.filter { nil != $0.absoluteString.rangeOfString("\(self.modelName).sqlite") }
+            for url in sqliteUrls {
+                do {
+                    try fileManager.removeItemAtURL(url)
+                }
+                catch let error as NSError {
+                    Log("Unable to remove sqlite file with error: \(error.localizedDescription)")
+                    throw error
+                }
             }
         }
-        
-        //Block the mainContext while the sqlite files are removed asynchronously to ensure the
-        //files are totally before any other activity occurs (on the main context).
-        writingContext?.performBlockAndWait {
-            let fileManager = NSFileManager.defaultManager()
-            
-            do {
-                let urls = try fileManager.contentsOfDirectoryAtURL(
-                    self.containerURL, includingPropertiesForKeys: [], options: .SkipsSubdirectoryDescendants)
-                
-                let sqliteUrls = urls.filter { nil != $0.absoluteString.rangeOfString("\(self.modelName).sqlite") }
-                for url in sqliteUrls {
-                    do {
-                        try fileManager.removeItemAtURL(url)
-                    }
-                    catch let error as NSError {
-                        Log("Unable to remove sqlite file with error: \(error.localizedDescription)")
-                        completeOnMain(error)
-                        
-                        //Bail if we get at least one error.
-                        break
-                    }
-                }
-                
-                completeOnMain()
-            }
-            catch let error as NSError {
-                Log("Unable to fetch contents of container directory with error: \(error.localizedDescription)")
-                completeOnMain(error)
-            }
+        catch let error as NSError {
+            Log("Unable to fetch contents of container directory with error: \(error.localizedDescription)")
+            throw error
         }
     }
 }
@@ -318,7 +345,10 @@ extension CoreDataStack {
         }
         catch let error as NSError {
             Log("Attempt to add `persistentStoreCoordinator` failed with error: \(error.localizedDescription)")
-            self.removeDBFiles()
+            do {
+                try self.removeDBFiles()
+            }
+            catch {}
         }
         
         return coordinator
@@ -358,6 +388,16 @@ extension CoreDataStack {
 }
 
 
+extension CoreDataStack {
+    
+    private func onMain(completion: (ErrorType? -> Void)?, withError error: ErrorType? = nil)  {
+        dispatch_async(dispatch_get_main_queue()) {
+            completion?(error)
+        }
+    }
+}
+
+
 
 
 //MARK: - Log -
@@ -367,10 +407,14 @@ private func Log(message: String, file: String = #file, function: String = #func
         return
     }
     
-    print("<>< CoreDataStack ><>")
+    print(">< CoreDataStack ><")
     print("File: \(file)")
     print("Function: \(function), Line: \(line)")
     debugPrint(message)
-    print("<>")
+    print("><><><><><><><><><><")
 }
+
+
+
+
 
