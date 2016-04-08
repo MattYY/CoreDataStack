@@ -21,15 +21,15 @@ import CoreData
 /// a concurrent private writing context that references the persistent store coordinator and
 /// does the actual writing to disk.
 ///
-/// [Private Writing Context (PWC)] -> concurrent, writes to disk
+///     [Writing Context] -> concurrent, writes to disk
 ///             ^
 ///             |
 ///             |
-///       [Main Context (MC)] -> synchronous, Child of PWC
+///       [Main Context] -> synchronous, Child of WC
 ///             ^
 ///             |
 ///             |
-///     [Temporary Context] -> concurrent, spawn at will
+///     [Concurrent Context] -> Temporary context which can be spawned at will.  Use for large fetches.
 ///
 /// ><><><><><><><
 
@@ -42,38 +42,33 @@ public class CoreDataStack {
     private let inMemoryStore: Bool
 
     private var persistentStoreCoordinator: NSPersistentStoreCoordinator?
-    private var managedObjectModel: NSManagedObjectModel?
-    private var writingContext: NSManagedObjectContext?
+    private var managedObjectModel: NSManagedObjectModel
+    private let writingContext: NSManagedObjectContext
     
-    private var validContextState: Bool {
-        guard let _ = mainContext, _ = writingContext else {
+    private var deletedStore: Bool {
+        guard persistentStoreCoordinator == nil else {
             return false
         }
         return true
     }
     
-    private var storeType: String {
-        return inMemoryStore ? NSInMemoryStoreType : NSSQLiteStoreType
-    }
-    
-    private var storeOptions: [String: Bool] {
-        return [
-            NSMigratePersistentStoresAutomaticallyOption : true,
-            NSInferMappingModelAutomaticallyOption : true
-        ]
-    }
+    private let storeType: String
+    private let storeOptions: [String: Bool]
     
     
     ///Custom Errors
     public enum CoreDataStackError: ErrorType, CustomDebugStringConvertible {
-        case PersistentStoreUnavailable
+        case DeletedStore
+        case InvalidModelPath(path: NSURL?)
         
         public var debugDescription: String {
             switch self {
-            case .PersistentStoreUnavailable:
-                let message = "This persistent store is not set up. This can happen if there is an initialization" +
-                              "error or the store has been deleted using the `deleteStore` method."
-                return message
+            case .DeletedStore:
+                return "The backing store for this stack has been deleted. " +
+                       "Saves are no longer possible with this stack instance."
+            
+            case .InvalidModelPath(let path):
+                return "Unable to find model at path \(path)."
             }
         }
     }
@@ -82,7 +77,7 @@ public class CoreDataStack {
     public typealias ErrorCompletionBlock = (error: ErrorType?) -> Void
     
     ///The main context. a NSManagedObjectContext that is created with the MainQueueConcurrencyType concurrencyType.
-    private(set) internal var mainContext: NSManagedObjectContext?
+    public let mainContext: NSManagedObjectContext
     
     
     /// Create a stack instance.
@@ -102,7 +97,49 @@ public class CoreDataStack {
         self.inMemoryStore = inMemoryStore
         
         loggingOn = logOutput
-        try setup()
+        
+        
+        storeType = inMemoryStore ? NSInMemoryStoreType : NSSQLiteStoreType
+        storeOptions = [
+            NSMigratePersistentStoresAutomaticallyOption : true,
+            NSInferMappingModelAutomaticallyOption : true
+        ]
+        
+        //managedObjectModel
+        let modelURL = bundle.URLForResource(modelName, withExtension: "momd")
+        guard let mURL = modelURL else {
+            Log("Unabled able to find object model file with name: \(modelName)")
+            throw CoreDataStackError.InvalidModelPath(path: modelURL)
+        }
+  
+        managedObjectModel = NSManagedObjectModel(contentsOfURL: mURL)!
+        
+        //writingContext
+        guard let psc = persistentStoreCoordinator else {
+            fatalError("Attempting to create `writingContext` before the `persistentStoreCoordinator` is set up.")
+        }
+        
+        writingContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
+        writingContext.persistentStoreCoordinator = psc
+        
+        //mainContext
+        mainContext = NSManagedObjectContext(concurrencyType: .MainQueueConcurrencyType)
+        mainContext.parentContext = writingContext
+        
+        //persistentStoreCoordinator
+        persistentStoreCoordinator = NSPersistentStoreCoordinator(managedObjectModel: managedObjectModel)
+        let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
+        
+        do {
+            try persistentStoreCoordinator?.addPersistentStoreWithType(storeType, configuration: nil, URL: url, options: storeOptions)
+        }
+        catch let error as NSError {
+            let message = "Attempt to add `persistentStoreCoordinator` failed with error: " +
+                "\(error.localizedDescription). Deleting store..."
+            
+            Log(message)
+            try deleteStore()
+        }
     }
 }
 
@@ -130,28 +167,14 @@ public extension CoreDataStack {
     
     public func deleteStore() throws {
         if #available(iOS 9.0, *) {
-            try removeDBFilesiOS9()
+            try destroyPersistentStoreIOS9()
         } else {
-            // Fallback on earlier versions
-        }
-        /*
-        guard validContextState else {
-            throw CoreDataStackError.InvalidContextState
+            try destroyPersistentStoreIOS8()
         }
         
-        do {
-            try self.tearDown()
-            do {
-                //try self.removeDBFiles()
-            }
-            catch let error as NSError {
-                throw error
-            }
-        }
-        catch let error as NSError {
-            throw error
-        }
-        */
+        //Clear out any unsaved context objects
+        self.mainContext.reset()
+        self.writingContext.reset()
     }
     
     
@@ -160,8 +183,8 @@ public extension CoreDataStack {
     /// - `completion` : optional completion block. Called on the main queue.
     
     public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ErrorCompletionBlock? = nil) {
-        guard let mc = mainContext, wc = writingContext else {
-            completion?(error: CoreDataStackError.InvalidContextState)
+        guard deletedStore else {
+            completion?(error: CoreDataStackError.DeletedStore)
             return
         }
         
@@ -198,17 +221,15 @@ public extension CoreDataStack {
     }
     
     
-    /// Creates a concurrent context that inherits from the mainContext
-    /// and will propogate its save down through the `mainContext` and ultimately to the
-    /// `writingContext` when passed to the `saveToDisk` function.
+    /// Creates a concurrent context that inherits from the mainContext and will propogate its save down
+    /// through the `mainContext` and ultimately to the `writingContext` when passed to the `saveToDisk` function.
     public func concurrentContext() -> NSManagedObjectContext? {
-        guard let mc = self.mainContext else {
-            Log("Unable to create concurrent context because the mainContext is not currently set up.")
+        guard deletedStore else {
             return nil
         }
         
         let managedObjectContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
-        managedObjectContext.parentContext = mc
+        managedObjectContext.parentContext = mainContext
         return managedObjectContext
     }
     
@@ -219,49 +240,8 @@ public extension CoreDataStack {
 
 //MARK: - LifeCycle -
 private extension CoreDataStack {
-    
-    private func setup() throws {
-        
-        //TODO: throw...
-        
-        //1.
-        managedObjectModel = createManagedObjectModel()
-        
-        //2.
-        persistentStoreCoordinator = createPersistentStoreCoordinator()
-        
-        //3.
-        writingContext = createWritingContext()
-        
-        //4.
-        mainContext = createMainContext()
-    }
-    
-    
-    private func tearDown() throws {
-        if #available(iOS 9.0, *) {
-            try removeDBFilesiOS9()
-        } else {
-            // Fallback on earlier versions
-        }
-        
-//        managedObjectModel = nil
-//        persistentStoreCoordinator = nil
-//        self.mainContext?.reset()
-//        self.mainContext = nil
-//        self.writingContext?.reset()
-//        self.writingContext = nil
-    }
-    
-    
-    private func removePersistentStore() throws {
-        
-    }
-    
-    private func removeDBFiles() throws {
 
-    }
-    
+
     @available(iOS 9.0, *)
     private func destroyPersistentStoreIOS9() throws {
         //The store has already been destroyed if the persistentStoreCoordinator is nil here so bail silently.
@@ -272,6 +252,10 @@ private extension CoreDataStack {
         do {
             let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
             try psc.destroyPersistentStoreAtURL(url, withType: storeType, options: storeOptions)
+            
+            //nil the coordinator instance because we determine if the stack is
+            //"destroyed" by checking if the coordinator == nil or not.
+            persistentStoreCoordinator = nil
         }
         catch let error as NSError {
             throw error
@@ -289,6 +273,10 @@ private extension CoreDataStack {
         for store in psc.persistentStores {
             do {
                 try self.persistentStoreCoordinator?.removePersistentStore(store)
+                
+                //nil the coordinator instance because we determine if the stack is "destroyed"
+                //by checking if the coordinator == nil or not.
+                persistentStoreCoordinator = nil
                 
                 //Remove all files that match modelName.sqlite* (includes -wal and -shm files)
                 do {
@@ -323,85 +311,6 @@ private extension CoreDataStack {
 
 
 
-//MARK: - Stack -
-extension CoreDataStack {
-    
-    private func createManagedObjectModel() -> NSManagedObjectModel? {
-        guard managedObjectModel == nil else {
-            return managedObjectModel!
-        }
-        
-        let modelURL = bundle.URLForResource(modelName, withExtension: "momd")
-        guard let mURL = modelURL else {
-            Log("Unabled able to find object model file with name: \(modelName)")
-            return nil
-        }
-        
-        guard let managedObjectModel = NSManagedObjectModel(contentsOfURL: mURL) else {
-            Log("Unabled to instantiate `managedObjectModel` with name \"\(modelName)\".  Bailing.")
-            return nil
-        }
-        
-        return managedObjectModel
-    }
-    
-    
-    private func createPersistentStoreCoordinator() throws -> NSPersistentStoreCoordinator? {
-        guard let mom = managedObjectModel else {
-            Log("Attempting to create a `persistentStoreCoordinator` but `managedObjectModel` is nil.")
-            return nil
-        }
-        
-        guard persistentStoreCoordinator == nil else {
-            return persistentStoreCoordinator
-        }
-        
-        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: mom)
-        let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
-
-        do {
-            try coordinator.addPersistentStoreWithType(storeType, configuration: nil, URL: url, options: storeOptions)
-        }
-        catch let error as NSError {
-            Log("Attempt to add `persistentStoreCoordinator` failed with error: \(error.localizedDescription)")
-            try self.removeDBFiles()
-        }
-        
-        return coordinator
-    }
-    
-    
-    private func createWritingContext() -> NSManagedObjectContext {
-        guard let psc = persistentStoreCoordinator else {
-            Log("Attempting to create `writingContext` before the `persistentStoreCoordinator` is set up.")
-            return
-        }
-
-        let managedObjectContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
-        managedObjectContext.persistentStoreCoordinator = psc
-        return managedObjectContext
-    }
-    
-    
-    private func createMainContext() -> NSManagedObjectContext {
-        guard let wc = writingContext else {
-            Log("Attempting to create `mainContext` before the persistent store coordinator is setup.")
-            return nil
-        }
-        
-        guard mainContext == nil else {
-            return mainContext
-        }
-
-        let managedObjectContext = NSManagedObjectContext(concurrencyType: .MainQueueConcurrencyType)
-        managedObjectContext.parentContext = wc
-        return managedObjectContext
-    }
-    
-    
-    
-}
-
 //MARK: - Utilities -
 extension CoreDataStack {
     
@@ -421,11 +330,15 @@ private func Log(message: String, file: String = #file, function: String = #func
         return
     }
     
-    print(">< CoreDataStack ><")
-    print("File: \(file)")
-    print("Function: \(function), Line: \(line)")
-    debugPrint(message)
-    print("><><><><><><><><><><")
+    let string = String(
+        "><><>< CoreDataStack ><><><\n" +
+        "File: \(file)\n" +
+        "Function: \(function), Line: \(line)\n" +
+        message +
+        "><><><><><><><><><><><><><>"
+    )
+    
+    print(string)
 }
 
 

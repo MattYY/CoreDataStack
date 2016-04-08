@@ -23,9 +23,9 @@ class StackTests: XCTestCase {
         let containerURL = createContainerFromName("TestDir")
         
         //create sqlite
-        var stack = createStack(containerURL)
+        let stack = try! createStack(containerURL)
         
-        let entity = createTestObj(stack.mainContext!)
+        let entity = createTestObj(stack.mainContext)
         entity.testString = "BLAH"
         
         let expectation = expectationWithDescription("SaveStore")
@@ -170,14 +170,9 @@ class StackTests: XCTestCase {
     //MARK: Save
     func testDataIsSavedOnTheMainContext() {
         let containerURL = createContainerFromName("TestDir")
-        let stack = createStack(containerURL)
-        
-        
-        guard let context = stack.mainContext else {
-            fatalError()
-        }
-        
-        let entity = createTestObj(context)
+        let stack = try! createStack(containerURL)
+
+        let entity = createTestObj(stack.mainContext)
         entity.testString = "BLAH"
         
         let expectation = expectationWithDescription("SaveStore")
@@ -190,15 +185,10 @@ class StackTests: XCTestCase {
         let fetchRequest = NSFetchRequest(entityName: Constants.EntityName)
         fetchRequest.fetchLimit = 1
         do {
-            guard let mainContext = stack.mainContext else {
-                XCTFail()
-                return
-            }
-            
             //make sure the fetching context is clean
-            mainContext.reset()
+            stack.mainContext.reset()
             
-            let result = try context.executeFetchRequest(fetchRequest).first
+            let result = try stack.mainContext.executeFetchRequest(fetchRequest).first
             let obj = result as! TestEntity
             XCTAssertEqual(obj.testString, "BLAH")
         }
@@ -211,7 +201,7 @@ class StackTests: XCTestCase {
     
     func testDataIsSavedOnAConcurrentContext() {
         let containerURL = createContainerFromName("New4")
-        let stack = createStack(containerURL)
+        let stack = try! createStack(containerURL)
 
         guard let context = stack.concurrentContext() else {
             XCTFail()
@@ -228,15 +218,10 @@ class StackTests: XCTestCase {
             stack.saveToDisk(context) { (error) in
                 let fetchRequest = NSFetchRequest(entityName: Constants.EntityName)
                 do {
-                    guard let mainContext = stack.mainContext else {
-                        XCTFail()
-                        return
-                    }
-                    
                     //make sure the fetching context is clean
-                    mainContext.reset()
+                    stack.mainContext.reset()
                     
-                    let result = try mainContext.executeFetchRequest(fetchRequest)
+                    let result = try stack.mainContext.executeFetchRequest(fetchRequest)
                     let entities = result as? [TestEntity]
                     
                     XCTAssertEqual(entities!.count, 1000)
@@ -322,9 +307,10 @@ extension StackTests {
         catch {}
     }
     
-    private func createStack(containerURL: NSURL) -> CoreDataStack {
+    private func createStack(containerURL: NSURL) throws -> CoreDataStack {
         let bundle = NSBundle(forClass: StackTests.self)
-        let stack = CoreDataStack(
+        
+        let stack = try CoreDataStack(
             bundle: bundle,
             modelName: Constants.ModelName,
             containerURL: containerURL,
