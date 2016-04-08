@@ -72,7 +72,7 @@ public class CoreDataStack {
     private let writingContext: NSManagedObjectContext
     
     private var deletedStore: Bool {
-        guard persistentStoreCoordinator == nil else {
+        guard persistentStoreCoordinator != nil else {
             return false
         }
         return true
@@ -212,6 +212,7 @@ public extension CoreDataStack {
     /// - `completion` : optional completion block. Called on the main queue.
     public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ((error: ErrorType?) -> Void)? = nil) {
         guard deletedStore else {
+            Log(CoreDataStackError.DeletedStore.debugDescription)
             completion?(error: CoreDataStackError.DeletedStore)
             return
         }
@@ -255,6 +256,7 @@ public extension CoreDataStack {
     /// and then `writingContext` on it's way to disk.
     public func concurrentContext() -> NSManagedObjectContext? {
         guard deletedStore else {
+            Log(CoreDataStackError.DeletedStore.debugDescription)
             return nil
         }
         
@@ -280,7 +282,8 @@ private extension CoreDataStack {
     
     @available(iOS 9.0, *)
     private func destroyPersistentStoreIOS9() throws {
-        //The store has already been destroyed if the persistentStoreCoordinator is nil here so bail silently.
+        //The store has already been destroyed if the persistentStoreCoordinator
+        //is nil here so bail silently.
         guard let psc = persistentStoreCoordinator else {
             return
         }
@@ -300,7 +303,8 @@ private extension CoreDataStack {
     
     
     private func destroyPersistentStoreIOS8() throws {
-        //The store has already been destroyed if the persistentStoreCoordinator is nil here so bail silently.
+        //The store has already been destroyed if the persistentStoreCoordinator is nil
+        //here so bail silently.
         guard let psc = persistentStoreCoordinator else {
             return
         }
@@ -367,11 +371,11 @@ private func Log(message: String, file: String = #file, function: String = #func
     }
     
     let string = String(
-        "><><>< CoreDataStack ><><><\n" +
+        "\n><><>< CoreDataStack ><><><\n" +
         "File: \(file)\n" +
         "Function: \(function), Line: \(line)\n" +
-        message +
-        "><><><><><><><><><><><><><>"
+        message + "\n" +
+        "><><><><><><><><><><><><><>\n"
     )
     
     print(string)
