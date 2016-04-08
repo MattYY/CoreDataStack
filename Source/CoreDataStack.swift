@@ -72,10 +72,6 @@ public class CoreDataStack {
             }
         }
     }
-
-    ///Reused completion block pattern that is used for completions.
-    public typealias ErrorCompletionBlock = (error: ErrorType?) -> Void
-    
     ///The main context. a NSManagedObjectContext that is created with the MainQueueConcurrencyType concurrencyType.
     public let mainContext: NSManagedObjectContext
     
@@ -90,46 +86,62 @@ public class CoreDataStack {
     /// The underlying persistant store is set hardcoded to use an sqlite database and as basic migration options
     /// (`NSMigratePersistentStoresAutomaticallyOption` and `NSInferMappingModelAutomaticallyOption`) set to true.
     
+    
     public required init(bundle: NSBundle, modelName: String, containerURL: NSURL, inMemoryStore: Bool = false, logOutput: Bool = false) throws {
+        
+        //Options
         self.bundle = bundle
         self.modelName = modelName
         self.containerURL = containerURL
         self.inMemoryStore = inMemoryStore
         
+        
+        //logging
         loggingOn = logOutput
         
-        
+        //store settings
         storeType = inMemoryStore ? NSInMemoryStoreType : NSSQLiteStoreType
         storeOptions = [
             NSMigratePersistentStoresAutomaticallyOption : true,
             NSInferMappingModelAutomaticallyOption : true
         ]
         
-        //managedObjectModel
+        
+        //
+        //
+        // STACK SETUP
+        //
+        //
+        
+        // Baking the full setup chain into the initializer to maintain `let` semantics for the `mainContext.
+        // Not very pretty but it's better for the api interface because using `var` + implicity unwrapped
+        // optional implies the instance could changed under the hood.
+        
+        //<><><><> managedObjectModel
         let modelURL = bundle.URLForResource(modelName, withExtension: "momd")
         guard let mURL = modelURL else {
             Log("Unabled able to find object model file with name: \(modelName)")
             throw CoreDataStackError.InvalidModelPath(path: modelURL)
         }
-  
         managedObjectModel = NSManagedObjectModel(contentsOfURL: mURL)!
         
-        //writingContext
+        
+        //<><><><> writingContext
         guard let psc = persistentStoreCoordinator else {
             fatalError("Attempting to create `writingContext` before the `persistentStoreCoordinator` is set up.")
         }
-        
         writingContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
         writingContext.persistentStoreCoordinator = psc
         
-        //mainContext
+        
+        //<><><><> mainContext
         mainContext = NSManagedObjectContext(concurrencyType: .MainQueueConcurrencyType)
         mainContext.parentContext = writingContext
         
-        //persistentStoreCoordinator
+        
+        //<><><><> persistentStoreCoordinator
         persistentStoreCoordinator = NSPersistentStoreCoordinator(managedObjectModel: managedObjectModel)
         let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
-        
         do {
             try persistentStoreCoordinator?.addPersistentStoreWithType(storeType, configuration: nil, URL: url, options: storeOptions)
         }
@@ -149,7 +161,6 @@ public class CoreDataStack {
 /// ><><><><><><><
 public extension CoreDataStack {
 
-    
     
     ///Tears down the stack by removing and niling the current persistentStoreCoordinator, niling the
     ///managedObjectModel and resets the writing and main contexts in a thread-safe manner. Subsequently,
@@ -182,7 +193,7 @@ public extension CoreDataStack {
     /// - `context` : optional MOC.  If nothing is passed, mainContext is assumed.
     /// - `completion` : optional completion block. Called on the main queue.
     
-    public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ErrorCompletionBlock? = nil) {
+    public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ((error: ErrorType?) -> Void)? = nil) {
         guard deletedStore else {
             completion?(error: CoreDataStackError.DeletedStore)
             return
@@ -315,7 +326,7 @@ private extension CoreDataStack {
 extension CoreDataStack {
     
     //Convenience for dispatching back on the main queue
-    private func onMain(withError error: ErrorType? = nil, call completion: ErrorCompletionBlock?)  {
+    private func onMain(withError error: ErrorType? = nil, call completion: ((error: ErrorType?) -> Void)?)  {
         dispatch_async(dispatch_get_main_queue()) {
             completion?(error: error)
         }
