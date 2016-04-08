@@ -52,25 +52,28 @@ public class CoreDataStack {
         return true
     }
     
+    private var storeType: String {
+        return inMemoryStore ? NSInMemoryStoreType : NSSQLiteStoreType
+    }
+    
+    private var storeOptions: [String: Bool] {
+        return [
+            NSMigratePersistentStoresAutomaticallyOption : true,
+            NSInferMappingModelAutomaticallyOption : true
+        ]
+    }
+    
     
     ///Custom Errors
     public enum CoreDataStackError: ErrorType, CustomDebugStringConvertible {
-        ///Occurs when `deleteStore` or `saveToDisk` is attempted but mainContext and/or writingContext are nil
-        case InvalidContextState
-        ///Occurs when `deleteStore` is attempted but `persistentStoreCoordinator` is nil
-        case InvalidStore
-        
-        //case NotSetup
+        case PersistentStoreUnavailable
         
         public var debugDescription: String {
             switch self {
-            case .InvalidContextState:
-                let message = "This stack currently has a nil `mainContext` and/or a nil `writingContext`.  This is" +
-                              "can happen if the `deleteStore` method is called without the rejuvenate flag set to" +
-                              "true.  The only way to fix is to set up a new stack from scratch."
+            case .PersistentStoreUnavailable:
+                let message = "This persistent store is not set up. This can happen if there is an initialization" +
+                              "error or the store has been deleted using the `deleteStore` method."
                 return message
-            case .InvalidStore:
-                return "The persistent store is nil which can only be fixed by recreating the stack."
             }
         }
     }
@@ -212,6 +215,8 @@ public extension CoreDataStack {
 }
 
 
+
+
 //MARK: - LifeCycle -
 private extension CoreDataStack {
     
@@ -250,39 +255,23 @@ private extension CoreDataStack {
     
     
     private func removePersistentStore() throws {
-        let lastStore = persistentStoreCoordinator?.persistentStores.last
-        guard let store = lastStore else {
-            throw CoreDataStackError.InvalidStore
-        }
         
-        do {
-            try self.persistentStoreCoordinator?.removePersistentStore(store)
-        }
-        catch let error as NSError {
-            Log("Unable to remove the persistent store with error: \(error.localizedDescription)")
-            throw error
-        }
     }
     
     private func removeDBFiles() throws {
-//        if #available(iOS 9, *) {
-//            try removeDBFilesiOS9()
-//        } else {
-//            try removeDBFilesiOS8()
-//        }
+
     }
     
     @available(iOS 9.0, *)
-    private func removeDBFilesiOS9() throws {
-        let storeType = inMemoryStore ? NSInMemoryStoreType : NSSQLiteStoreType
-        let options = [
-            NSMigratePersistentStoresAutomaticallyOption : true,
-            NSInferMappingModelAutomaticallyOption : true
-        ]
+    private func destroyPersistentStoreIOS9() throws {
+        //The store has already been destroyed if the persistentStoreCoordinator is nil here so bail silently.
+        guard let psc = persistentStoreCoordinator else {
+            return
+        }
         
         do {
             let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
-            try persistentStoreCoordinator?.destroyPersistentStoreAtURL(url, withType: storeType, options: options)
+            try psc.destroyPersistentStoreAtURL(url, withType: storeType, options: storeOptions)
         }
         catch let error as NSError {
             throw error
@@ -290,26 +279,44 @@ private extension CoreDataStack {
     }
     
     
-    private func removeDBFilesiOS8() throws {
-        let fileManager = NSFileManager.defaultManager()
-        do {
-            let urls = try fileManager.contentsOfDirectoryAtURL(
-                self.containerURL, includingPropertiesForKeys: [], options: .SkipsSubdirectoryDescendants)
-            
-            let sqliteUrls = urls.filter { nil != $0.absoluteString.rangeOfString("\(self.modelName).sqlite") }
-            for url in sqliteUrls {
+    private func destroyPersistentStoreIOS8() throws {
+        //The store has already been destroyed if the persistentStoreCoordinator is nil here so bail silently.
+        guard let psc = persistentStoreCoordinator else {
+            return
+        }
+        
+        //Remove store(s)
+        for store in psc.persistentStores {
+            do {
+                try self.persistentStoreCoordinator?.removePersistentStore(store)
+                
+                //Remove all files that match modelName.sqlite* (includes -wal and -shm files)
                 do {
-                    try fileManager.removeItemAtURL(url)
+                    let fileManager = NSFileManager.defaultManager()
+                    let urls = try fileManager.contentsOfDirectoryAtURL(
+                        self.containerURL, includingPropertiesForKeys: [], options: .SkipsSubdirectoryDescendants)
+                    
+                    let sqliteUrls = urls.filter { nil != $0.absoluteString.rangeOfString("\(self.modelName).sqlite") }
+                    for url in sqliteUrls {
+                        do {
+                            try fileManager.removeItemAtURL(url)
+                        }
+                        catch let error as NSError {
+                            Log("Unable to remove sqlite file with error: \(error.localizedDescription)")
+                            throw error
+                        }
+                    }
                 }
                 catch let error as NSError {
-                    Log("Unable to remove sqlite file with error: \(error.localizedDescription)")
+                    Log("Unable to fetch contents of container directory with error: \(error.localizedDescription)")
                     throw error
                 }
+                
             }
-        }
-        catch let error as NSError {
-            Log("Unable to fetch contents of container directory with error: \(error.localizedDescription)")
-            throw error
+            catch let error as NSError {
+                Log("Unable to remove the persistent store with error: \(error.localizedDescription)")
+                throw error
+            }
         }
     }
 }
@@ -339,9 +346,9 @@ extension CoreDataStack {
     }
     
     
-    private func createPersistentStoreCoordinator() -> NSPersistentStoreCoordinator? {
+    private func createPersistentStoreCoordinator() throws -> NSPersistentStoreCoordinator? {
         guard let mom = managedObjectModel else {
-            Log("Attempting to create a `persistentStoreCoordinator` but one already exists.")
+            Log("Attempting to create a `persistentStoreCoordinator` but `managedObjectModel` is nil.")
             return nil
         }
         
@@ -351,36 +358,23 @@ extension CoreDataStack {
         
         let coordinator = NSPersistentStoreCoordinator(managedObjectModel: mom)
         let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
-        let storeType = inMemoryStore ? NSInMemoryStoreType : NSSQLiteStoreType
-        
-        let options = [
-            NSMigratePersistentStoresAutomaticallyOption : true,
-            NSInferMappingModelAutomaticallyOption : true
-        ]
-        
+
         do {
-            try coordinator.addPersistentStoreWithType(storeType, configuration: nil, URL: url, options: options)
+            try coordinator.addPersistentStoreWithType(storeType, configuration: nil, URL: url, options: storeOptions)
         }
         catch let error as NSError {
             Log("Attempt to add `persistentStoreCoordinator` failed with error: \(error.localizedDescription)")
-            do {
-                try self.removeDBFiles()
-            }
-            catch {}
+            try self.removeDBFiles()
         }
         
         return coordinator
     }
     
     
-    private func createWritingContext() -> NSManagedObjectContext? {
+    private func createWritingContext() -> NSManagedObjectContext {
         guard let psc = persistentStoreCoordinator else {
             Log("Attempting to create `writingContext` before the `persistentStoreCoordinator` is set up.")
-            return nil
-        }
-        
-        guard writingContext == nil else {
-            return writingContext
+            return
         }
 
         let managedObjectContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
@@ -389,7 +383,7 @@ extension CoreDataStack {
     }
     
     
-    private func createMainContext() -> NSManagedObjectContext? {
+    private func createMainContext() -> NSManagedObjectContext {
         guard let wc = writingContext else {
             Log("Attempting to create `mainContext` before the persistent store coordinator is setup.")
             return nil
