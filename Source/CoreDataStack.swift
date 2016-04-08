@@ -13,13 +13,40 @@ import CoreData
 
 /// ><><><><><><><
 ///
-/// CoreDataStack is a basic coredata setup that enables the creation of contained (sandboxed) instances
-/// of a store and provides commonly used conveniences like deleting the store and creating an inMemory instance
-/// for testing.
+/// CoreDataStack is a basic coredata setup that encapsulates the contexts and
+/// `Persistent Store Coordinator` (coordinator) that necessary for using Core Data.  It is
+/// tested on iOS8 and iOS9 but probably works with previous os versions as well. 
 ///
-/// The underlying coredata configuration is typical where the `mainContext` inherits from
-/// a concurrent private writing context that references the persistent store coordinator and
-/// does the actual writing to disk.
+/// The stack provides the following conveniences and features:
+///     * Concurrent writing to disk
+///     * Ability create a temporary concurrent context that propogates through the `mainContext`
+///       (convenient if you are using `NSFetchedResultsController`
+///     * Ability to "sandbox" the backing store files in a custom directory.
+///     * Enables the setting up the coordinator with an in-memory option. (Good for unit tests)
+///     * Provides easy clean up of the store and deletion of the associated DB files
+///
+///
+/// Beyond these conveniences the intention in creating CoreDataStack is to create a simple
+/// interface and implementation of a common stack setup. One of the core decisions
+/// that guides its architecture is that the underlying `mainContext` and `writingContext` are
+/// garuanteed to be valid instances (non-optional) for the life of the stack.  This has the 
+/// benefit of simplifying the API but also has the side effect of making the initialization
+/// throwable.  This, I believe, is a good thing as it properly reflects the fact that setting
+/// up the store always has the potential to fail due to corrupted DB files.
+///
+/// Complicating matters is the fact that the underlying store can be deleted by the stack.  In
+/// this case the `mainContext` and `writingContext` are both still valid instances but the
+/// coordinator is nil. Calling `saveToDisk` or spawning a `concurrentContext` at this point
+/// will return the `CoreDataStackError.DeletedStore` error.  After calling `deleteStore` you
+/// should consider the stack to be dead and release it from your application.
+///
+/// The underlying coredata configuration leverages Core Data's child/parent inheritance system.
+/// In this stack the `mainContext` inherits from the `writingContext`.  The `writingContext`
+/// is backed by the coordinator which actually writes to the database. You can spawn a concurrent
+/// context that is a child of the `mainContext`.  Saves made on this context using the 
+/// `writeToDisk` method will propagate through the `mainContext` and eventually to disk. Here's a
+/// diagram.
+///
 ///
 ///     [Writing Context] -> concurrent, writes to disk
 ///             ^
@@ -30,6 +57,9 @@ import CoreData
 ///             |
 ///             |
 ///     [Concurrent Context] -> Temporary context which can be spawned at will.  Use for large fetches.
+///
+///
+/// This setup has worked for me in the past but isn't right for every Core Data situation.
 ///
 /// ><><><><><><><
 
@@ -72,22 +102,34 @@ public class CoreDataStack {
             }
         }
     }
-    ///The main context. a NSManagedObjectContext that is created with the MainQueueConcurrencyType concurrencyType.
+    
+    ///A NSManagedObjectContext that is created with the MainQueueConcurrencyType concurrencyType. 
+    ///`mainContext` is garuanteed to be a valid instance for the life of the stack if 
+    ///granted initialization is successful.
     public let mainContext: NSManagedObjectContext
     
     
     /// Create a stack instance.
-    /// - `bundle` (required): NSBundle in which your target NSManagedObjectModel can be found.
-    /// - `modelName` (required): must correspond with the name of the backing NSManagedObjectModel
-    /// - `containerURL` (required): is a URL that points to the folder in which the backing sqlite files will be stored.
-    /// - `inMemoryStore` :defaults to false. if true, will create the persistant store using the `NSInMemoryStoreType`
+    ///
+    /// - Requires: `bundle` is a NSBundle in which your target NSManagedObjectModel can be found.
+    ///
+    /// - Requires: `modelName` is a String that must correspond with the name of the 
+    ///   backing `momd` file/
+    ///
+    /// - Requires: `containerURL` is a URL that points to the directory in which the
+    ///   sqlite files will be stored.
+    ///
+    /// - `inMemoryStore` Defaults to false. if true, will create the persistant store
+    ///   using the `NSInMemoryStoreType`
+    ///
     /// - `logDebugOutput`:defaults to false. if true, will log helpful errors/debugging output.
     ///
-    /// The underlying persistant store is set hardcoded to use an sqlite database and as basic migration options
-    /// (`NSMigratePersistentStoresAutomaticallyOption` and `NSInferMappingModelAutomaticallyOption`) set to true.
+    /// The underlying persistant store is set hardcoded to use an sqlite database and as basic
+    /// migration options (`NSMigratePersistentStoresAutomaticallyOption` and
+    ///  `NSInferMappingModelAutomaticallyOption`) set to true.
     
-    
-    public required init(bundle: NSBundle, modelName: String, containerURL: NSURL, inMemoryStore: Bool = false, logOutput: Bool = false) throws {
+    public required init(bundle: NSBundle, modelName: String, containerURL: NSURL,
+                         inMemoryStore: Bool = false, logOutput: Bool = false) throws {
         
         //Options
         self.bundle = bundle
@@ -232,7 +274,7 @@ public extension CoreDataStack {
     }
     
     
-    /// Creates a concurrent context that inherits from the mainContext and will propogate its save down
+    /// Creates a concurrent context that inherits from the mainContext and will propagate its save down
     /// through the `mainContext` and ultimately to the `writingContext` when passed to the `saveToDisk` function.
     public func concurrentContext() -> NSManagedObjectContext? {
         guard deletedStore else {
@@ -251,7 +293,6 @@ public extension CoreDataStack {
 
 //MARK: - LifeCycle -
 private extension CoreDataStack {
-
 
     @available(iOS 9.0, *)
     private func destroyPersistentStoreIOS9() throws {
