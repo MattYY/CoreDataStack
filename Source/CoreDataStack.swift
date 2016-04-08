@@ -11,8 +11,6 @@ import UIKit
 import CoreData
 
 
-/// ><><><><><><><
-///
 /// CoreDataStack is a basic coredata setup that encapsulates the contexts and
 /// `Persistent Store Coordinator` (coordinator) that necessary for using Core Data.  It is
 /// tested on iOS8 and iOS9 but probably works with previous os versions as well. 
@@ -60,8 +58,6 @@ import CoreData
 ///
 ///
 /// This setup has worked for me in the past but isn't right for every Core Data situation.
-///
-/// ><><><><><><><
 
 public class CoreDataStack {
     
@@ -159,7 +155,7 @@ public class CoreDataStack {
         // using `var` + implicity unwrapped optional implies the instance could changed under
         // the hood.
         
-        //<><><><> Model
+        //Model
         let modelURL = bundle.URLForResource(modelName, withExtension: "momd")
         guard let mURL = modelURL else {
             Log("Unabled able to find object model file with name: \(modelName)")
@@ -167,11 +163,11 @@ public class CoreDataStack {
         }
         managedObjectModel = NSManagedObjectModel(contentsOfURL: mURL)!
         
-        //<><><><> Context Definition
+        //Context Definition
         writingContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
         mainContext = NSManagedObjectContext(concurrencyType: .MainQueueConcurrencyType)
         
-        //<><><><> persistentStoreCoordinator
+        //Coordinator
         persistentStoreCoordinator = NSPersistentStoreCoordinator(managedObjectModel: managedObjectModel)
         let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
         do {
@@ -185,7 +181,7 @@ public class CoreDataStack {
             try removeDBFiles()
         }
         
-        //<><><><> Context Association
+        //Context Association
         mainContext.parentContext = writingContext
         writingContext.persistentStoreCoordinator = persistentStoreCoordinator!
     }
@@ -194,7 +190,6 @@ public class CoreDataStack {
 
 
 //MARK: - API -
-/// ><><><><><><><
 public extension CoreDataStack {
 
     
@@ -381,8 +376,3 @@ private func Log(message: String, file: String = #file, function: String = #func
     
     print(string)
 }
-
-
-
-
-
