@@ -88,15 +88,17 @@ public class CoreDataStack {
     
     ///Custom Errors
     public enum CoreDataStackError: ErrorType, CustomDebugStringConvertible {
+        /// `DeletedStore` error will occur if `saveToDisk` or `concurrentStore` are called after
+        /// the backing store for a stack has been deleted using the `deleteStore` method.
         case DeletedStore
+        /// `InvalidModelPath` error will occur if no .momd file can be located at the
+        /// culmulative `bundle` + `modelName` + `containerURL` path during initialization.
         case InvalidModelPath(path: NSURL?)
         
         public var debugDescription: String {
             switch self {
             case .DeletedStore:
-                return "The backing store for this stack has been deleted. " +
-                       "Saves are no longer possible with this stack instance."
-            
+                return "The backing store for this stack has been deleted."
             case .InvalidModelPath(let path):
                 return "Unable to find model at path \(path)."
             }
@@ -150,16 +152,14 @@ public class CoreDataStack {
         
         
         //
-        //
         // STACK SETUP
         //
-        //
+        // Baking the full setup chain into the initializer to maintain `let` semantics for
+        // the `mainContext. Not very pretty but it's better for the api interface because
+        // using `var` + implicity unwrapped optional implies the instance could changed under
+        // the hood.
         
-        // Baking the full setup chain into the initializer to maintain `let` semantics for the `mainContext.
-        // Not very pretty but it's better for the api interface because using `var` + implicity unwrapped
-        // optional implies the instance could changed under the hood.
-        
-        //<><><><> managedObjectModel
+        //<><><><> Model
         let modelURL = bundle.URLForResource(modelName, withExtension: "momd")
         guard let mURL = modelURL else {
             Log("Unabled able to find object model file with name: \(modelName)")
@@ -167,19 +167,9 @@ public class CoreDataStack {
         }
         managedObjectModel = NSManagedObjectModel(contentsOfURL: mURL)!
         
-        
-        //<><><><> writingContext
-        guard let psc = persistentStoreCoordinator else {
-            fatalError("Attempting to create `writingContext` before the `persistentStoreCoordinator` is set up.")
-        }
+        //<><><><> Context Definition
         writingContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
-        writingContext.persistentStoreCoordinator = psc
-        
-        
-        //<><><><> mainContext
         mainContext = NSManagedObjectContext(concurrencyType: .MainQueueConcurrencyType)
-        mainContext.parentContext = writingContext
-        
         
         //<><><><> persistentStoreCoordinator
         persistentStoreCoordinator = NSPersistentStoreCoordinator(managedObjectModel: managedObjectModel)
@@ -189,11 +179,15 @@ public class CoreDataStack {
         }
         catch let error as NSError {
             let message = "Attempt to add `persistentStoreCoordinator` failed with error: " +
-                "\(error.localizedDescription). Deleting store..."
+                "\(error.localizedDescription). Removing store files..."
             
             Log(message)
-            try deleteStore()
+            try removeDBFiles()
         }
+        
+        //<><><><> Context Association
+        mainContext.parentContext = writingContext
+        writingContext.persistentStoreCoordinator = persistentStoreCoordinator!
     }
 }
 
@@ -204,28 +198,15 @@ public class CoreDataStack {
 public extension CoreDataStack {
 
     
-    ///Tears down the stack by removing and niling the current persistentStoreCoordinator, niling the
-    ///managedObjectModel and resets the writing and main contexts in a thread-safe manner. Subsequently,
-    ///all the files with an sqlite* extension (the sqlite, sqlite-wal and sqlite-shm) are deleted from disk.
-    ///This deletion is done asyncronously on the `writingContext` but is ultimately dispatched back to main.
-    ///
-    ///¡BE CAREFUL! as your DB data will not be recoverable after this method is called.
-    ///
-    ///By default the `rejuvenate` option is set to true which will cause the stack to be setup again from scratch.
-    ///If you do not wish the stack to be rejuvenated in this manner pass false.  Effectively, this will render
-    ///the stack instance useless but is valuable if you are planning on discontinuing the stack altogether
-    ///and do not wish to incur the extra overhead of setting it up again.
-    ///
-    ///The optional completion block param is called on the main queue.
-    
+    /// `deleteStore` synchronously removes the backing sqlite files and resets the main and
+    /// writing contexts. If the application is running in iOS 9 it leverages the new
+    /// `destroyPersistentStoreAtURL` method that is provided by Core Data.  For iOS 8 devices
+    /// this method will use `NSFileManager` to do the deletion and will delete all the 
+    /// .sqlite files that match the format modelName.sqlite* (includes -wal and -shm files).
     public func deleteStore() throws {
-        if #available(iOS 9.0, *) {
-            try destroyPersistentStoreIOS9()
-        } else {
-            try destroyPersistentStoreIOS8()
-        }
+        try removeDBFiles()
         
-        //Clear out any unsaved context objects
+        //Clean out the contexts
         self.mainContext.reset()
         self.writingContext.reset()
     }
@@ -234,7 +215,6 @@ public extension CoreDataStack {
     ///Save down through the context chain to disk.
     /// - `context` : optional MOC.  If nothing is passed, mainContext is assumed.
     /// - `completion` : optional completion block. Called on the main queue.
-    
     public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ((error: ErrorType?) -> Void)? = nil) {
         guard deletedStore else {
             completion?(error: CoreDataStackError.DeletedStore)
@@ -274,8 +254,10 @@ public extension CoreDataStack {
     }
     
     
-    /// Creates a concurrent context that inherits from the mainContext and will propagate its save down
-    /// through the `mainContext` and ultimately to the `writingContext` when passed to the `saveToDisk` function.
+    /// `concurrentContext` returns a context that is initialized with the
+    /// `PrivateQueueConcurrencyType` and inherits from the `mainContext`. Passing this
+    /// context into the `saveToDisk` function will propagate the save through the `mainContext`
+    /// and then `writingContext` on it's way to disk.
     public func concurrentContext() -> NSManagedObjectContext? {
         guard deletedStore else {
             return nil
@@ -284,8 +266,7 @@ public extension CoreDataStack {
         let managedObjectContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
         managedObjectContext.parentContext = mainContext
         return managedObjectContext
-    }
-    
+    }    
 }
 
 
@@ -293,7 +274,15 @@ public extension CoreDataStack {
 
 //MARK: - LifeCycle -
 private extension CoreDataStack {
-
+    
+    private func removeDBFiles() throws {
+        if #available(iOS 9.0, *) {
+            try destroyPersistentStoreIOS9()
+        } else {
+            try destroyPersistentStoreIOS8()
+        }
+    }
+    
     @available(iOS 9.0, *)
     private func destroyPersistentStoreIOS9() throws {
         //The store has already been destroyed if the persistentStoreCoordinator is nil here so bail silently.

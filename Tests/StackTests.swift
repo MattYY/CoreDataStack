@@ -169,8 +169,6 @@ class StackTests: XCTestCase {
     
     //MARK: Save
     func testDataIsSavedOnTheMainContext() {
-        let string: String("s").unicodeScalars
-        
         let containerURL = createContainerFromName("TestDir")
         let stack = try! createStack(containerURL)
 
