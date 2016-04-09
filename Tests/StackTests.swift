@@ -3,7 +3,7 @@
 //  Tests
 //
 //  Created by Matthew Yannascoli on 4/5/16.
-//  Copyright © 2016 my. All rights reserved.
+//  Copyright © 2016 Matthew Yannascoli. All rights reserved.
 //
 
 import XCTest
