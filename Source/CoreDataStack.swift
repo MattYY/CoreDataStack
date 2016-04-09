@@ -11,17 +11,18 @@ import UIKit
 import CoreData
 
 
-/// CoreDataStack is a basic coredata setup that encapsulates the contexts and
-/// `Persistent Store Coordinator` (coordinator) that necessary for using Core Data.  It is
-/// tested on iOS8 and iOS9 but probably works with previous os versions as well. 
+/// CoreDataStack (stack) is a basic setup that encapsulates the contexts and
+/// `Persistent Store Coordinator` (coordinator) that are necessary for using Core Data.
+/// Its written in Swift 2.2 and is supports iOS versions iOS8 and up.
+///
 ///
 /// The stack provides the following conveniences and features:
 ///     * Concurrent writing to disk
-///     * Ability create a temporary concurrent context that propogates through the `mainContext`
-///       (convenient if you are using `NSFetchedResultsController`
+///     * Ability to create a temporary concurrent context that propogates
+///       through the `mainContext`
 ///     * Ability to "sandbox" the backing store files in a custom directory.
-///     * Enables the setting up the coordinator with an in-memory option. (Good for unit tests)
-///     * Provides easy clean up of the store and deletion of the associated DB files
+///     * Ability to set up the coordinator with an in-memory option.
+///     * Easy clean up of the store and deletion of the associated DB files
 ///
 ///
 /// Beyond these conveniences the intention in creating CoreDataStack is to create a simple
@@ -29,21 +30,21 @@ import CoreData
 /// that guides its architecture is that the underlying `mainContext` and `writingContext` are
 /// garuanteed to be valid instances (non-optional) for the life of the stack.  This has the 
 /// benefit of simplifying the API but also has the side effect of making the initialization
-/// throwable.  This, I believe, is a good thing as it properly reflects the fact that setting
-/// up the store always has the potential to fail due to corrupted DB files.
+/// throwable.  This properly reflects the fact that setting up the store always has the
+/// potential to fail when setting up the coodinator if, for example, the underlying DB files 
+/// have been corrupted.
 ///
 /// Complicating matters is the fact that the underlying store can be deleted by the stack.  In
 /// this case the `mainContext` and `writingContext` are both still valid instances but the
 /// coordinator is nil. Calling `saveToDisk` or spawning a `concurrentContext` at this point
 /// will return the `CoreDataStackError.DeletedStore` error.  After calling `deleteStore` you
-/// should consider the stack to be dead and release it from your application.
+/// should consider the stack to be dead and release any references to it in your application.
 ///
-/// The underlying coredata configuration leverages Core Data's child/parent inheritance system.
+/// The context configuration employed leverages Core Data's child/parent inheritance mechanisms.
 /// In this stack the `mainContext` inherits from the `writingContext`.  The `writingContext`
 /// is backed by the coordinator which actually writes to the database. You can spawn a concurrent
 /// context that is a child of the `mainContext`.  Saves made on this context using the 
-/// `writeToDisk` method will propagate through the `mainContext` and eventually to disk. Here's a
-/// diagram.
+/// `writeToDisk` method will propagate through the `mainContext` and eventually to disk.
 ///
 ///
 ///     [Writing Context] -> concurrent, writes to disk
@@ -54,11 +55,9 @@ import CoreData
 ///             ^
 ///             |
 ///             |
-///     [Concurrent Context] -> Temporary context which can be spawned at will.  Use for large fetches.
+///     [Concurrent Context] -> Temporary context which can be spawned at will.
 ///
 ///
-/// This setup has worked for me in the past but isn't right for every Core Data situation.
-
 public class CoreDataStack {
     
     //MARK: Properties
@@ -81,7 +80,6 @@ public class CoreDataStack {
     private let storeType: String
     private let storeOptions: [String: Bool]
     
-    
     ///Custom Errors
     public enum CoreDataStackError: ErrorType, CustomDebugStringConvertible {
         /// `DeletedStore` error will occur if `saveToDisk` or `concurrentStore` are called after
@@ -102,8 +100,7 @@ public class CoreDataStack {
     }
     
     ///A NSManagedObjectContext that is created with the MainQueueConcurrencyType concurrencyType. 
-    ///`mainContext` is garuanteed to be a valid instance for the life of the stack if 
-    ///granted initialization is successful.
+    ///`mainContext` is garuanteed to be a valid instance for the life of the stack.
     public let mainContext: NSManagedObjectContext
     
     
@@ -120,7 +117,7 @@ public class CoreDataStack {
     /// - `inMemoryStore` Defaults to false. if true, will create the persistant store
     ///   using the `NSInMemoryStoreType`
     ///
-    /// - `logDebugOutput`:defaults to false. if true, will log helpful errors/debugging output.
+    /// - `logOutput`:defaults to false. if true, will log helpful errors/debugging output.
     ///
     /// The underlying persistant store is set hardcoded to use an sqlite database and as basic
     /// migration options (`NSMigratePersistentStoresAutomaticallyOption` and
@@ -145,7 +142,6 @@ public class CoreDataStack {
             NSMigratePersistentStoresAutomaticallyOption : true,
             NSInferMappingModelAutomaticallyOption : true
         ]
-        
         
         //
         // STACK SETUP
@@ -192,7 +188,6 @@ public class CoreDataStack {
 //MARK: - API -
 public extension CoreDataStack {
 
-    
     /// `deleteStore` synchronously removes the backing sqlite files and resets the main and
     /// writing contexts. If the application is running in iOS 9 it leverages the new
     /// `destroyPersistentStoreAtURL` method that is provided by Core Data.  For iOS 8 devices
@@ -205,7 +200,6 @@ public extension CoreDataStack {
         self.mainContext.reset()
         self.writingContext.reset()
     }
-    
     
     ///Save down through the context chain to disk.
     /// - `context` : optional MOC.  If nothing is passed, mainContext is assumed.
@@ -248,7 +242,6 @@ public extension CoreDataStack {
             }
         }
     }
-    
     
     /// `concurrentContext` returns a context that is initialized with the
     /// `PrivateQueueConcurrencyType` and inherits from the `mainContext`. Passing this
@@ -301,7 +294,6 @@ private extension CoreDataStack {
         }
     }
     
-    
     private func destroyPersistentStoreIOS8() throws {
         //The store has already been destroyed if the persistentStoreCoordinator is nil
         //here so bail silently.
@@ -353,7 +345,6 @@ private extension CoreDataStack {
 
 //MARK: - Utilities -
 extension CoreDataStack {
-    
     //Convenience for dispatching back on the main queue
     private func onMain(withError error: ErrorType? = nil, call completion: ((error: ErrorType?) -> Void)?)  {
         dispatch_async(dispatch_get_main_queue()) {
