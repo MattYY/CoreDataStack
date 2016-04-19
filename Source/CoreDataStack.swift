@@ -28,10 +28,10 @@ import CoreData
 /// Beyond these conveniences the intention in creating CoreDataStack is to create a simple
 /// interface and implementation of a common stack setup. One of the core decisions
 /// that guides its architecture is that the underlying `mainContext` and `writingContext` are
-/// garuanteed to be valid instances (non-optional) for the life of the stack.  This has the 
+/// garuanteed to be valid instances (non-optional) for the life of the stack.  This has the
 /// benefit of simplifying the API but also has the side effect of making the initialization
 /// throwable.  This properly reflects the fact that setting up the store always has the
-/// potential to fail when setting up the coodinator if, for example, the underlying DB files 
+/// potential to fail when setting up the coodinator if, for example, the underlying DB files
 /// have been corrupted.
 ///
 /// Complicating matters is the fact that the underlying store can be deleted by the stack.  In
@@ -43,7 +43,7 @@ import CoreData
 /// The context configuration employed leverages Core Data's child/parent inheritance mechanisms.
 /// In this stack the `mainContext` inherits from the `writingContext`.  The `writingContext`
 /// is backed by the coordinator which actually writes to the database. You can spawn a concurrent
-/// context that is a child of the `mainContext`.  Saves made on this context using the 
+/// context that is a child of the `mainContext`.  Saves made on this context using the
 /// `writeToDisk` method will propagate through the `mainContext` and eventually to disk.
 ///
 ///
@@ -63,7 +63,7 @@ public class CoreDataStack {
     //MARK: Properties
     private let bundle: NSBundle
     private let modelName: String
-    private let containerURL: NSURL
+    private let directoryURL: NSURL
     private let inMemoryStore: Bool
 
     private var persistentStoreCoordinator: NSPersistentStoreCoordinator?
@@ -108,11 +108,11 @@ public class CoreDataStack {
     ///
     /// - Requires: `bundle` is a NSBundle in which your target NSManagedObjectModel can be found.
     ///
-    /// - Requires: `modelName` is a String that must correspond with the name of the 
-    ///   backing `momd` file/
-    ///
-    /// - Requires: `containerURL` is a URL that points to the directory in which the
+    /// - Requires: `directoryURL` is a URL that points to the directory in which the
     ///   sqlite files will be stored.
+    ///
+    /// - Requires: `modelName` is a String that must correspond with the name of the
+    ///   backing `momd` file
     ///
     /// - `inMemoryStore` Defaults to false. if true, will create the persistant store
     ///   using the `NSInMemoryStoreType`
@@ -123,13 +123,13 @@ public class CoreDataStack {
     /// migration options (`NSMigratePersistentStoresAutomaticallyOption` and
     ///  `NSInferMappingModelAutomaticallyOption`) set to true.
     
-    public required init(bundle: NSBundle, modelName: String, containerURL: NSURL,
+    public required init(bundle: NSBundle, directoryURL: NSURL, modelName: String,
                          inMemoryStore: Bool = false, logOutput: Bool = false) throws {
         
         //Options
         self.bundle = bundle
         self.modelName = modelName
-        self.containerURL = containerURL
+        self.directoryURL = directoryURL
         self.inMemoryStore = inMemoryStore
         
         
@@ -165,7 +165,7 @@ public class CoreDataStack {
         
         //Coordinator
         persistentStoreCoordinator = NSPersistentStoreCoordinator(managedObjectModel: managedObjectModel)
-        let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
+        let url = directoryURL.URLByAppendingPathComponent("\(modelName).sqlite")
         do {
             try persistentStoreCoordinator?.addPersistentStoreWithType(storeType, configuration: nil, URL: url, options: storeOptions)
         }
@@ -282,7 +282,7 @@ private extension CoreDataStack {
         }
         
         do {
-            let url = containerURL.URLByAppendingPathComponent("\(modelName).sqlite")
+            let url = directoryURL.URLByAppendingPathComponent("\(modelName).sqlite")
             try psc.destroyPersistentStoreAtURL(url, withType: storeType, options: storeOptions)
             
             //nil the coordinator instance because we determine if the stack is
@@ -314,7 +314,7 @@ private extension CoreDataStack {
                 do {
                     let fileManager = NSFileManager.defaultManager()
                     let urls = try fileManager.contentsOfDirectoryAtURL(
-                        self.containerURL, includingPropertiesForKeys: [], options: .SkipsSubdirectoryDescendants)
+                        self.directoryURL, includingPropertiesForKeys: [], options: .SkipsSubdirectoryDescendants)
                     
                     let sqliteUrls = urls.filter { nil != $0.absoluteString.rangeOfString("\(self.modelName).sqlite") }
                     for url in sqliteUrls {

@@ -109,8 +109,8 @@ extension StackTests {
         
         let s = try! CoreDataStack(
             bundle: bundle,
+            directoryURL: containerURL,
             modelName: "TestModel",
-            containerURL: containerURL,
             inMemoryStore: false,
             logOutput: true)
         
