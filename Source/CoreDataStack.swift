@@ -65,7 +65,7 @@ public class CoreDataStack {
     private let modelName: String
     private let directoryURL: NSURL
     private let inMemoryStore: Bool
-
+    
     private var persistentStoreCoordinator: NSPersistentStoreCoordinator?
     private var managedObjectModel: NSManagedObjectModel
     private let writingContext: NSManagedObjectContext
@@ -99,30 +99,33 @@ public class CoreDataStack {
         }
     }
     
-    ///A NSManagedObjectContext that is created with the MainQueueConcurrencyType concurrencyType. 
+    ///A NSManagedObjectContext that is created with the MainQueueConcurrencyType concurrencyType.
     ///`mainContext` is garuanteed to be a valid instance for the life of the stack.
     public let mainContext: NSManagedObjectContext
     
     
-    /// Create a stack instance.
+    /// Create a stack instance. Note, the underlying persistant store is set hardcoded to use an
+    /// sqlite database and as basic migration options.
     ///
-    /// - Requires: `bundle` is a NSBundle in which your target NSManagedObjectModel can be found.
+    /// - parameter bundle: Required. is a NSBundle in which your target NSManagedObjectModel
+    ///                     can be found.
     ///
-    /// - Requires: `directoryURL` is a URL that points to the directory in which the
-    ///   sqlite files will be stored.
+    /// - parameter directoryURL: Required. A URL that points to the directory in which the
+    ///                           sqlite files will be stored.
     ///
-    /// - Requires: `modelName` is a String that must correspond with the name of the
-    ///   backing `momd` file
+    /// - parameter modelName: Required. A String that must correspond with the name of the
+    ///                        backing `momd` file.
     ///
-    /// - `inMemoryStore` Defaults to false. if true, will create the persistant store
-    ///   using the `NSInMemoryStoreType`
+    /// - parameter inMemoryStore: Defaults to false. If true, will create the persistant store
+    ///                            using the `NSInMemoryStoreType`.
     ///
-    /// - `logOutput`:defaults to false. if true, will log helpful errors/debugging output.
+    /// - parameter logOutput: Defaults to false. if true, will log helpful errors/debugging output.
     ///
-    /// The underlying persistant store is set hardcoded to use an sqlite database and as basic
-    /// migration options (`NSMigratePersistentStoresAutomaticallyOption` and
-    ///  `NSInferMappingModelAutomaticallyOption`) set to true.
-    
+    /// - throws: An error representing issues setting up the object model or coordinator.
+    ///           Common problems are an invalid model path (combination of
+    ///           bundle/directoryURL/modelName) or an corruption error to the underlying
+    ///           .sqlite files.
+    ///
     public required init(bundle: NSBundle, directoryURL: NSURL, modelName: String,
                          inMemoryStore: Bool = false, logOutput: Bool = false) throws {
         
@@ -143,7 +146,6 @@ public class CoreDataStack {
             NSInferMappingModelAutomaticallyOption : true
         ]
         
-        //
         // STACK SETUP
         //
         // Baking the full setup chain into the initializer to maintain `let` semantics for
@@ -167,7 +169,8 @@ public class CoreDataStack {
         persistentStoreCoordinator = NSPersistentStoreCoordinator(managedObjectModel: managedObjectModel)
         let url = directoryURL.URLByAppendingPathComponent("\(modelName).sqlite")
         do {
-            try persistentStoreCoordinator?.addPersistentStoreWithType(storeType, configuration: nil, URL: url, options: storeOptions)
+            try persistentStoreCoordinator?.addPersistentStoreWithType(
+                storeType, configuration: nil, URL: url, options: storeOptions)
         }
         catch let error as NSError {
             let message = "Attempt to add `persistentStoreCoordinator` failed with error: " +
@@ -175,6 +178,7 @@ public class CoreDataStack {
             
             Log(message)
             try removeDBFiles()
+            throw error
         }
         
         //Context Association
@@ -187,12 +191,15 @@ public class CoreDataStack {
 
 //MARK: - API -
 public extension CoreDataStack {
-
-    /// `deleteStore` synchronously removes the backing sqlite files and resets the main and
+    
+    /// Synchronously removes the backing sqlite files and resets the main and
     /// writing contexts. If the application is running in iOS 9 it leverages the new
     /// `destroyPersistentStoreAtURL` method that is provided by Core Data.  For iOS 8 devices
-    /// this method will use `NSFileManager` to do the deletion and will delete all the 
-    /// .sqlite files that match the format modelName.sqlite* (includes -wal and -shm files).
+    /// this method will use `NSFileManager` to remove all the files that match the format
+    /// modelName.sqlite* (includes -wal and -shm files).
+    ///
+    /// - throws: An NSError particular to either destroyPersistentStoreAtURL (iOS9) or
+    ///           NSFileMananger.removeItemAtURL (iOS 8).
     public func deleteStore() throws {
         try removeDBFiles()
         
@@ -201,9 +208,13 @@ public extension CoreDataStack {
         self.writingContext.reset()
     }
     
-    ///Save down through the context chain to disk.
-    /// - `context` : optional MOC.  If nothing is passed, mainContext is assumed.
-    /// - `completion` : optional completion block. Called on the main queue.
+    /// Save down through the context chain to disk.
+    ///
+    /// - parameter context: an optional managed object context. If nothing is passed,
+    ///                      mainContext is assumed.
+    ///
+    /// - parameter completion: an optional block that is called upon save completion.
+    ///                         Dispatch occurs on the main queue.
     public func saveToDisk(context: NSManagedObjectContext? = nil, completion: ((error: ErrorType?) -> Void)? = nil) {
         guard deletedStore else {
             Log(CoreDataStackError.DeletedStore.debugDescription)
@@ -243,10 +254,11 @@ public extension CoreDataStack {
         }
     }
     
-    /// `concurrentContext` returns a context that is initialized with the
-    /// `PrivateQueueConcurrencyType` and inherits from the `mainContext`. Passing this
+    /// Creates a managed object context that inherits from `mainContenxt`. Passing this
     /// context into the `saveToDisk` function will propagate the save through the `mainContext`
-    /// and then `writingContext` on it's way to disk.
+    /// on its way to the `writingContext`.
+    ///
+    /// - returns: An optional `NSManagedObjectContext`
     public func concurrentContext() -> NSManagedObjectContext? {
         guard deletedStore else {
             Log(CoreDataStackError.DeletedStore.debugDescription)
@@ -256,7 +268,7 @@ public extension CoreDataStack {
         let managedObjectContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
         managedObjectContext.parentContext = mainContext
         return managedObjectContext
-    }    
+    }
 }
 
 
@@ -268,7 +280,8 @@ private extension CoreDataStack {
     private func removeDBFiles() throws {
         if #available(iOS 9.0, *) {
             try destroyPersistentStoreIOS9()
-        } else {
+        }
+        else {
             try destroyPersistentStoreIOS8()
         }
     }
@@ -346,7 +359,7 @@ private extension CoreDataStack {
 //MARK: - Utilities -
 extension CoreDataStack {
     //Convenience for dispatching back on the main queue
-    private func onMain(withError error: ErrorType? = nil, call completion: ((error: ErrorType?) -> Void)?)  {
+    private func onMain(withError error: ErrorType? = nil, call completion: ((error: ErrorType?) -> Void)?) {
         dispatch_async(dispatch_get_main_queue()) {
             completion?(error: error)
         }
@@ -363,9 +376,9 @@ private func Log(message: String, file: String = #file, function: String = #func
     
     let string = String(
         "\n><><>< CoreDataStack ><><><\n" +
-        "File: \(file)\n" +
-        "Function: \(function), Line: \(line)\n" +
-        message + "\n" +
+            "File: \(file)\n" +
+            "Function: \(function), Line: \(line)\n" +
+            message + "\n" +
         "><><><><><><><><><><><><><>\n"
     )
     

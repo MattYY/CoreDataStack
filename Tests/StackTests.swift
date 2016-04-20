@@ -177,13 +177,7 @@ extension StackTests {
     func thenAFetchOnTheMainContextShouldReturnZeroItems() {
         let expectation = expectationWithDescription("Fetch")
         stack!.mainContext.performBlock {
-            let fetchRequest = NSFetchRequest(entityName: "TestEntity")
-            do {
-                let results = try self.stack!.mainContext.executeFetchRequest(fetchRequest)
-                XCTAssertEqual(results.count, 0)
-                expectation.fulfill()
-            }
-            catch {}
+                
         }
         waitForExpectationsWithTimeout(3.0, handler: nil)
     }
