@@ -177,7 +177,7 @@ extension StackTests {
     func thenAFetchOnTheMainContextShouldReturnZeroItems() {
         let expectation = expectationWithDescription("Fetch")
         stack!.mainContext.performBlock {
-                
+            expectation.fulfill()
         }
         waitForExpectationsWithTimeout(3.0, handler: nil)
     }
