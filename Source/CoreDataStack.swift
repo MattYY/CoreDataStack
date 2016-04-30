@@ -258,13 +258,8 @@ public extension CoreDataStack {
     /// context into the `saveToDisk` function will propagate the save through the `mainContext`
     /// on its way to the `writingContext`.
     ///
-    /// - returns: An optional `NSManagedObjectContext`
-    public func concurrentContext() -> NSManagedObjectContext? {
-        guard deletedStore else {
-            Log(CoreDataStackError.DeletedStore.debugDescription)
-            return nil
-        }
-        
+    /// - returns: A `NSManagedObjectContext`
+    public func concurrentContext() -> NSManagedObjectContext {
         let managedObjectContext = NSManagedObjectContext(concurrencyType: .PrivateQueueConcurrencyType)
         managedObjectContext.parentContext = mainContext
         return managedObjectContext

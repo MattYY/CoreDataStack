@@ -118,7 +118,7 @@ extension StackTests {
     }
     
     func givenAConcurrentContext() {
-        concurrentContext =  stack!.concurrentContext()!
+        concurrentContext =  stack!.concurrentContext()
     }
     
     func givenATestEntityCreatedOnTheMainContext() {
