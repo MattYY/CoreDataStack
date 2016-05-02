@@ -1,10 +1,22 @@
+// Copyright (c) 2016 Matthew Yannascoli
 //
-//  CoreDataStack.swift
-//  CoreDataStack
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
 //
-//  Created by Matthew Yannascoli on 4/1/16.
-//  Copyright © 2016 Matthew Yannascoli. All rights reserved.
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
 //
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 
 import UIKit
@@ -17,12 +29,14 @@ import CoreData
 ///
 ///
 /// The stack provides the following conveniences and features:
-///     * Concurrent writing to disk
-///     * Ability to create a temporary concurrent context that propogates
-///       through the `mainContext`
-///     * Ability to "sandbox" the backing store files in a custom directory.
-///     * Ability to set up the coordinator with an in-memory option.
-///     * Easy clean up of the store and deletion of the associated DB files
+///     * Self contained into one file for easy copy-pasting.  Can be used as a jump-off point 
+///       for more complicated stacks.
+///     * Simple interface that bubbles up points of failure to the initializer.
+///     * Concurrent writing to disk.
+///     * Easy creation of a temporary concurrent context that propagates through the `mainContext`.
+///     * Allows you to specify a container directory in order to "sandbox" the backing store files.
+///     * Option to set up the coordinator with an in-memory option.
+///     * Easy and safe cleanup of the store and deletion of the associated DB files.
 ///
 ///
 /// Beyond these conveniences the intention in creating CoreDataStack is to create a simple
@@ -36,27 +50,27 @@ import CoreData
 ///
 /// Complicating matters is the fact that the underlying store can be deleted by the stack.  In
 /// this case the `mainContext` and `writingContext` are both still valid instances but the
-/// coordinator is nil. Calling `saveToDisk` or spawning a `concurrentContext` at this point
-/// will return the `CoreDataStackError.DeletedStore` error.  After calling `deleteStore` you
-/// should consider the stack to be dead and release any references to it in your application.
+/// coordinator is nil. Calling `saveToDisk` at this point will return the
+/// `CoreDataStackError.DeletedStore` error.  After calling `deleteStore` you should consider
+/// the stack instance to be dead and release any references to it in your application.
 ///
 /// The context configuration employed leverages Core Data's child/parent inheritance mechanisms.
 /// In this stack the `mainContext` inherits from the `writingContext`.  The `writingContext`
 /// is backed by the coordinator which actually writes to the database. You can spawn a concurrent
 /// context that is a child of the `mainContext`.  Saves made on this context using the
-/// `writeToDisk` method will propagate through the `mainContext` and eventually to disk.
+/// `writeToDisk` method will propagate through the `mainContext` and eventually to disk. The
+/// stack implementation employs a common setup:
 ///
-///
-///     [Writing Context] -> concurrent, writes to disk
+///     [Persistent Store Coordinator] -> i/o to/from disk
 ///             ^
 ///             |
-///             |
-///       [Main Context] -> synchronous, Child of WC
+///     [Writing Context] -> Communicate with the coordinator off the main thread
 ///             ^
 ///             |
+///       [Main Context] -> Child of the writing context, operates on the main thread
+///             ^
 ///             |
-///     [Concurrent Context] -> Temporary context which can be spawned at will.
-///
+///     [Concurrent Context] -> Spawned at will for work that shouldn't block the main thread.\
 ///
 public class CoreDataStack {
     
